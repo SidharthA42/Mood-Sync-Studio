@@ -14,8 +14,8 @@ pillow
 plotly
 
 opencv-python-headless
-streamlit-webrtc
-av
+streamlit-webrtc==0.47.9
+av==12.3.0
 
 openai-whisper
 soundfile
