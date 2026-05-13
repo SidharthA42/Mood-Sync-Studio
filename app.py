@@ -18,12 +18,15 @@ from utils import emotion_to_sentiment, label_order_image, label_order_text, loa
 try:
     import av
     from streamlit_webrtc import RTCConfiguration, WebRtcMode, VideoProcessorBase, webrtc_streamer
-except Exception:
+except Exception as exc:
+    WEBRTC_IMPORT_ERROR = str(exc) or "streamlit-webrtc or av is not installed"
     av = None
     RTCConfiguration = None
     WebRtcMode = None
     VideoProcessorBase = object
     webrtc_streamer = None
+else:
+    WEBRTC_IMPORT_ERROR = ""
 
 
 st.set_page_config(page_title="MoodSync Studio", page_icon="MS", layout="wide")
@@ -651,10 +654,14 @@ with webcam_tab:
             else:
                 st.caption("Start the live camera to see the mood overlay and capture a frame for analysis.")
         else:
-            st.markdown('<div class="camera-note">Live browser video needs streamlit-webrtc and av. Install the updated requirements, then redeploy. Until then, this fallback can still take a browser webcam photo.</div>', unsafe_allow_html=True)
-            browser_capture = st.camera_input("Take a webcam photo", key="webcam_browser_capture")
-            if browser_capture is not None:
-                st.session_state.captured_frame = Image.open(browser_capture).convert("RGB")
+            st.error("Live browser video is not available because Streamlit Cloud did not load streamlit-webrtc/av.")
+            st.caption(f"Import status: {WEBRTC_IMPORT_ERROR}. Replace requirements.txt and runtime.txt, then reboot/redeploy the app.")
+            if st.button("Use Photo Fallback", use_container_width=True, key="enable_photo_fallback"):
+                st.session_state.use_photo_fallback = True
+            if st.session_state.get("use_photo_fallback"):
+                browser_capture = st.camera_input("Take a webcam photo", key="webcam_browser_capture")
+                if browser_capture is not None:
+                    st.session_state.captured_frame = Image.open(browser_capture).convert("RGB")
 
         if st.session_state.captured_frame is not None:
             st.image(st.session_state.captured_frame, caption="Clean captured frame", use_container_width=True)
