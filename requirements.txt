@@ -15,7 +15,7 @@ plotly
 
 opencv-python-headless
 streamlit-webrtc==0.47.9
-av==12.3.0
+av==11.0.0
 
 openai-whisper
 soundfile
