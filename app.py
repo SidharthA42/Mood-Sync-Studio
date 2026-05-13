@@ -1,5 +1,7 @@
 import time
+from collections import deque
 from datetime import datetime
+from threading import Lock
 
 import cv2
 import plotly.graph_objects as go
@@ -13,12 +15,24 @@ from image_emotion import annotate_faces, detect_faces, predict_emotion
 from text_sentiment import predict_sentiment
 from utils import emotion_to_sentiment, label_order_image, label_order_text, load_image_model, load_text_model
 
+try:
+    import av
+    from streamlit_webrtc import RTCConfiguration, WebRtcMode, VideoProcessorBase, webrtc_streamer
+except Exception:
+    av = None
+    RTCConfiguration = None
+    WebRtcMode = None
+    VideoProcessorBase = object
+    webrtc_streamer = None
+
 
 st.set_page_config(page_title="MoodSync Studio", page_icon="MS", layout="wide")
 
 EMOTION_C = {"happy": "#10b981", "sad": "#6366f1", "angry": "#ef4444", "fear": "#8b5cf6", "disgust": "#f97316", "surprise": "#eab308", "neutral": "#64748b"}
 SENT_C = {"positive": "#10b981", "negative": "#ef4444", "neutral": "#64748b"}
 RGB_C = {"happy": (16, 185, 129), "sad": (99, 102, 241), "angry": (239, 68, 68), "fear": (139, 92, 246), "disgust": (249, 115, 22), "surprise": (234, 179, 8), "neutral": (100, 116, 139)}
+WEBRTC_READY = av is not None and webrtc_streamer is not None
+RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}) if RTCConfiguration else None
 
 
 st.markdown("""
@@ -169,6 +183,87 @@ def live_camera_frame():
         st.session_state.cam_probs = probs
         st.session_state.cam_last_infer = now
     return draw_live_overlay(frame_rgb, faces), None
+
+
+class BrowserLiveMoodProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.lock = Lock()
+        self.history = deque(maxlen=5)
+        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        self.smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_smile.xml")
+        self.latest_clean_rgb = None
+        self.current_label = "Scanning"
+        self.current_confidence = 0.0
+        self.face_count = 0
+
+    def _detect_faces(self, frame_rgb):
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5, minSize=(42, 42))
+        return sorted([tuple(map(int, face)) for face in faces], key=lambda f: f[2] * f[3], reverse=True)
+
+    def _estimate_mood(self, frame_rgb, faces):
+        if not faces:
+            return "Scanning", 0.0, {}
+
+        x, y, w, h = faces[0]
+        face_gray = cv2.cvtColor(frame_rgb[y:y + h, x:x + w], cv2.COLOR_RGB2GRAY)
+        smiles = self.smile_cascade.detectMultiScale(face_gray, scaleFactor=1.7, minNeighbors=20, minSize=(25, 12))
+        if len(smiles) > 0:
+            probs = {"happy": 0.72, "neutral": 0.20, "surprise": 0.08}
+        else:
+            probs = {"neutral": 0.62, "happy": 0.18, "sad": 0.10, "angry": 0.10}
+
+        self.history.append(probs)
+        totals = {}
+        for item in self.history:
+            for label, value in item.items():
+                totals[label] = totals.get(label, 0.0) + float(value)
+        averaged = {label: value / len(self.history) for label, value in totals.items()}
+        label = max(averaged, key=averaged.get)
+        return label, averaged[label], averaged
+
+    def _draw_overlay(self, frame_bgr, faces, label, confidence):
+        output = frame_bgr.copy()
+        if not faces:
+            cv2.rectangle(output, (18, 18), (234, 58), (42, 29, 16), -1)
+            cv2.rectangle(output, (18, 18), (234, 58), (191, 184, 20), 1)
+            cv2.putText(output, "No face detected", (30, 45), cv2.FONT_HERSHEY_SIMPLEX, .62, (240, 244, 255), 2, cv2.LINE_AA)
+            return output
+
+        color_rgb = RGB_C.get(label.lower(), (45, 212, 191))
+        color = (color_rgb[2], color_rgb[1], color_rgb[0])
+        for index, (x, y, w, h) in enumerate(faces):
+            line = color if index == 0 else (148, 163, 184)
+            cv2.rectangle(output, (x, y), (x + w, y + h), line, 2)
+            text = f"LIVE MOOD {label.upper()} {confidence * 100:.0f}%" if index == 0 else "FACE"
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .58, 2)
+            ly = max(31, y - 12)
+            cv2.rectangle(output, (x, ly - th - 12), (x + tw + 18, ly + 7), line, -1)
+            cv2.putText(output, text, (x + 9, ly - 4), cv2.FONT_HERSHEY_SIMPLEX, .58, (255, 255, 255), 2, cv2.LINE_AA)
+        return output
+
+    def recv(self, frame):
+        frame_bgr = frame.to_ndarray(format="bgr24")
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        faces = self._detect_faces(frame_rgb)
+        label, confidence, _ = self._estimate_mood(frame_rgb, faces)
+
+        with self.lock:
+            self.latest_clean_rgb = frame_rgb.copy()
+            self.current_label = label
+            self.current_confidence = confidence
+            self.face_count = len(faces)
+
+        output = self._draw_overlay(frame_bgr, faces, label, confidence)
+        return av.VideoFrame.from_ndarray(output, format="bgr24")
+
+    def snapshot(self):
+        with self.lock:
+            return None if self.latest_clean_rgb is None else self.latest_clean_rgb.copy()
+
+    def stats(self):
+        with self.lock:
+            return self.current_label, self.current_confidence, self.face_count
 
 
 def chart_probs(probs, colors, title, horizontal=False, height=210, key=None, percent=True):
@@ -526,15 +621,40 @@ with upload_tab:
 with webcam_tab:
     left, right = st.columns(2, gap="large")
     with left:
-        st.markdown('<div class="panel"><div class="pt">Webcam capture <span class="pill">browser camera</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel"><div class="pt">Live webcam <span class="pill">browser live</span></div>', unsafe_allow_html=True)
         if st.session_state.camera_on:
             st.session_state.camera_on = False
             release_camera()
 
-        st.markdown('<div class="camera-note">Use the browser camera button below to take a clean frame. This works on Streamlit Cloud because the photo is captured from your browser instead of trying to access a camera on the remote server.</div>', unsafe_allow_html=True)
-        browser_capture = st.camera_input("Take a webcam photo", key="webcam_browser_capture")
-        if browser_capture is not None:
-            st.session_state.captured_frame = Image.open(browser_capture).convert("RGB")
+        if WEBRTC_READY:
+            st.markdown('<div class="camera-note">Click START and allow camera permission. The live video comes from your browser through WebRTC, so it works on Streamlit Cloud while still drawing the live mood rectangle on each frame.</div>', unsafe_allow_html=True)
+            ctx = webrtc_streamer(
+                key="moodsync_live_mood",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIG,
+                video_processor_factory=BrowserLiveMoodProcessor,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+            if ctx.video_processor:
+                label, confidence, face_count = ctx.video_processor.stats()
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Live mood", label)
+                m2.metric("Confidence", pct(confidence))
+                m3.metric("Faces", face_count)
+                if st.button("Capture Current Frame", use_container_width=True, key="capture_webrtc_frame"):
+                    frame_rgb = ctx.video_processor.snapshot()
+                    if frame_rgb is not None:
+                        st.session_state.captured_frame = Image.fromarray(frame_rgb).convert("RGB")
+                        st.rerun()
+                    st.warning("Start the live camera and wait for a visible frame before capturing.")
+            else:
+                st.caption("Start the live camera to see the mood overlay and capture a frame for analysis.")
+        else:
+            st.markdown('<div class="camera-note">Live browser video needs streamlit-webrtc and av. Install the updated requirements, then redeploy. Until then, this fallback can still take a browser webcam photo.</div>', unsafe_allow_html=True)
+            browser_capture = st.camera_input("Take a webcam photo", key="webcam_browser_capture")
+            if browser_capture is not None:
+                st.session_state.captured_frame = Image.open(browser_capture).convert("RGB")
 
         if st.session_state.captured_frame is not None:
             st.image(st.session_state.captured_frame, caption="Clean captured frame", use_container_width=True)
