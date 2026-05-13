@@ -526,34 +526,21 @@ with upload_tab:
 with webcam_tab:
     left, right = st.columns(2, gap="large")
     with left:
-        st.markdown('<div class="panel"><div class="pt">Live webcam <span class="pill">OpenCV direct</span></div>', unsafe_allow_html=True)
-        a, b = st.columns(2)
-        if a.button("Start Camera", use_container_width=True):
-            st.session_state.camera_on = True
-        if b.button("Stop Camera", use_container_width=True):
+        st.markdown('<div class="panel"><div class="pt">Webcam capture <span class="pill">browser camera</span></div>', unsafe_allow_html=True)
+        if st.session_state.camera_on:
             st.session_state.camera_on = False
             release_camera()
 
-        if st.session_state.camera_on:
-            frame, err = live_camera_frame()
-            if err:
-                st.error(err)
-            elif frame is not None:
-                st.image(frame, caption="Live mood overlay", channels="RGB", use_container_width=True)
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Live mood", st.session_state.cam_label)
-                m2.metric("Confidence", pct(st.session_state.cam_conf))
-                m3.metric("Faces", st.session_state.cam_faces)
-                if st.button("Capture Clean Frame", use_container_width=True):
-                    if st.session_state.latest_clean_rgb is not None:
-                        st.session_state.captured_frame = Image.fromarray(st.session_state.latest_clean_rgb).convert("RGB")
-                        st.session_state.camera_on = False
-                        release_camera()
-                        st.rerun()
-        else:
-            st.markdown('<div class="camera-note">Camera is off. Click Start Camera only when you want the live preview. This version uses OpenCV directly, so it does not need streamlit-webrtc, tornado, aiortc, or av.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="camera-note">Use the browser camera button below to take a clean frame. This works on Streamlit Cloud because the photo is captured from your browser instead of trying to access a camera on the remote server.</div>', unsafe_allow_html=True)
+        browser_capture = st.camera_input("Take a webcam photo", key="webcam_browser_capture")
+        if browser_capture is not None:
+            st.session_state.captured_frame = Image.open(browser_capture).convert("RGB")
+
         if st.session_state.captured_frame is not None:
             st.image(st.session_state.captured_frame, caption="Clean captured frame", use_container_width=True)
+            if st.button("Clear captured frame", use_container_width=True, key="clear_captured_frame"):
+                st.session_state.captured_frame = None
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
     with right:
         text, transcript, _audio_supplied = text_audio_box("webcam")
@@ -575,7 +562,7 @@ with webcam_tab:
     if st.session_state.webcam_result:
         show_results(*st.session_state.webcam_result, heatmap, tokens, "webcam")
     else:
-        st.info("Start camera, capture a clean frame, and provide either text or a transcribed audio recording/upload.")
+        st.info("Take a webcam photo and provide either text or a transcribed audio recording/upload.")
 
 with history_tab:
     history = st.session_state.analysis_history
