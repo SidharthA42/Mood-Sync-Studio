@@ -17,13 +17,10 @@ from utils import emotion_to_sentiment, label_order_image, label_order_text, loa
 
 try:
     import av
-    from streamlit_webrtc import RTCConfiguration, WebRtcMode, VideoProcessorBase, webrtc_streamer
+    from streamlit_webrtc import webrtc_streamer
 except Exception as exc:
     WEBRTC_IMPORT_ERROR = str(exc) or "streamlit-webrtc or av is not installed"
     av = None
-    RTCConfiguration = None
-    WebRtcMode = None
-    VideoProcessorBase = object
     webrtc_streamer = None
 else:
     WEBRTC_IMPORT_ERROR = ""
@@ -35,7 +32,7 @@ EMOTION_C = {"happy": "#10b981", "sad": "#6366f1", "angry": "#ef4444", "fear": "
 SENT_C = {"positive": "#10b981", "negative": "#ef4444", "neutral": "#64748b"}
 RGB_C = {"happy": (16, 185, 129), "sad": (99, 102, 241), "angry": (239, 68, 68), "fear": (139, 92, 246), "disgust": (249, 115, 22), "surprise": (234, 179, 8), "neutral": (100, 116, 139)}
 WEBRTC_READY = av is not None and webrtc_streamer is not None
-RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}) if RTCConfiguration else None
+RTC_CONFIG = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 
 
 st.markdown("""
@@ -188,7 +185,7 @@ def live_camera_frame():
     return draw_live_overlay(frame_rgb, faces), None
 
 
-class BrowserLiveMoodProcessor(VideoProcessorBase):
+class BrowserLiveMoodProcessor:
     def __init__(self):
         self.lock = Lock()
         self.history = deque(maxlen=5)
@@ -633,7 +630,6 @@ with webcam_tab:
             st.markdown('<div class="camera-note">Click START and allow camera permission. The live video comes from your browser through WebRTC, so it works on Streamlit Cloud while still drawing the live mood rectangle on each frame.</div>', unsafe_allow_html=True)
             ctx = webrtc_streamer(
                 key="moodsync_live_mood",
-                mode=WebRtcMode.SENDRECV,
                 rtc_configuration=RTC_CONFIG,
                 video_processor_factory=BrowserLiveMoodProcessor,
                 media_stream_constraints={"video": True, "audio": False},
@@ -655,7 +651,9 @@ with webcam_tab:
                 st.caption("Start the live camera to see the mood overlay and capture a frame for analysis.")
         else:
             st.error("Live browser video is not available because Streamlit Cloud did not load streamlit-webrtc/av.")
-            st.caption(f"Import status: {WEBRTC_IMPORT_ERROR}. Replace requirements.txt and runtime.txt, then reboot/redeploy the app.")
+            st.caption(f"Import status: {WEBRTC_IMPORT_ERROR}")
+            st.code("streamlit-webrtc==0.64.6\nav==16.1.0", language="text")
+            st.caption("If your deploy logs still show av==12.3.0 or streamlit-webrtc==0.47.9, GitHub still has the old requirements.txt.")
             if st.button("Use Photo Fallback", use_container_width=True, key="enable_photo_fallback"):
                 st.session_state.use_photo_fallback = True
             if st.session_state.get("use_photo_fallback"):
