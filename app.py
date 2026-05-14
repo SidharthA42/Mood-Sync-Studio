@@ -510,7 +510,7 @@ with upload_tab:
         st.info("Upload an image and provide either text or a transcribed audio recording/upload.")
 
 
-# ── Webcam tab (Fixed with STUN servers) ─────────────────────────────────────
+# ── Webcam tab (Fixed with TURN server & TCP) ─────────────────────────────────
 with webcam_tab:
     left, right = st.columns(2, gap="large")
 
@@ -547,7 +547,6 @@ with webcam_tab:
 
         st.markdown('<div class="input-button-space"></div>', unsafe_allow_html=True)
 
-        # Show live video feed using webrtc if running
         if st.session_state.webcam_running:
             st.markdown("""
             <div class="cam-hint">
@@ -557,18 +556,34 @@ with webcam_tab:
             </div>
             """, unsafe_allow_html=True)
 
-            # --- FIX: Add public STUN servers for reliable connection ---
+            # --- TURN/STUN configuration for cloud environments ---
             rtc_configuration = {
                 "iceServers": [
                     {"urls": ["stun:stun.l.google.com:19302"]},
                     {"urls": ["stun:stun1.l.google.com:19302"]},
-                ]
+                    {
+                        "urls": "turn:openrelay.metered.ca:80",
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject"
+                    },
+                    {
+                        "urls": "turn:openrelay.metered.ca:443",
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject"
+                    },
+                    {
+                        "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+                        "username": "openrelayproject",
+                        "credential": "openrelayproject"
+                    }
+                ],
+                "iceTransportPolicy": "relay"   # forces TURN, avoids UDP restrictions
             }
 
             ctx = webrtc_streamer(
                 key="moodsync-webrtc",
                 mode=WebRtcMode.SENDRECV,
-                rtc_configuration=rtc_configuration,   # <-- added STUN
+                rtc_configuration=rtc_configuration,
                 video_processor_factory=MoodSyncVideoProcessor,
                 media_stream_constraints={"video": True, "audio": False},
                 async_processing=True,
@@ -586,7 +601,7 @@ with webcam_tab:
                 unsafe_allow_html=True,
             )
 
-            # Handle Take Photo: capture latest frame from the video processor
+            # Handle Take Photo
             if photo_clicked and ctx and ctx.video_processor:
                 proc = ctx.video_processor
                 if hasattr(proc, 'latest_clean_frame') and proc.latest_clean_frame is not None:
@@ -618,7 +633,7 @@ with webcam_tab:
             </div>
             """, unsafe_allow_html=True)
 
-        # Show snapshot preview if available
+        # Snapshot preview
         if st.session_state.webcam_snapshot is not None:
             st.markdown('<div class="snapshot-box"><div class="snapshot-label">📸 Snapshot — ready to analyse</div>', unsafe_allow_html=True)
             annot = st.session_state.get("webcam_snapshot_annot") or st.session_state.webcam_snapshot
