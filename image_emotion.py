@@ -5,6 +5,18 @@ from utils import load_image_model, label_order_image
 import cv2
 
 
+# ── Emotion colour map (BGR for OpenCV drawing) ──────────────────────────────
+_EMOTION_BGR = {
+    "happy":    (129, 185, 16),   # green
+    "sad":      (241, 102, 99),   # indigo
+    "angry":    (68,  68,  239),  # red
+    "fear":     (246, 92,  139),  # purple
+    "disgust":  (22,  115, 249),  # orange
+    "surprise": (8,   179, 234),  # yellow
+    "neutral":  (139, 122, 107),  # slate
+}
+
+
 def detect_faces(img_np):
     """Detect faces in an RGB image and return boxes sorted by area."""
     gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
@@ -14,7 +26,11 @@ def detect_faces(img_np):
     faces = face_cascade.detectMultiScale(
         gray, scaleFactor=1.08, minNeighbors=5, minSize=(42, 42)
     )
-    return sorted([tuple(map(int, face)) for face in faces], key=lambda f: f[2] * f[3], reverse=True)
+    return sorted(
+        [tuple(map(int, face)) for face in faces],
+        key=lambda f: f[2] * f[3],
+        reverse=True,
+    )
 
 
 def annotate_faces(image: Image.Image, label: str, confidence: float):
@@ -30,7 +46,13 @@ def annotate_faces(image: Image.Image, label: str, confidence: float):
         text = f"{label.upper()} {confidence * 100:.0f}%" if index == 0 else "FACE"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
         label_y = max(28, y - 12)
-        cv2.rectangle(annotated, (x, label_y - th - 12), (x + tw + 18, label_y + 6), line_color, -1)
+        cv2.rectangle(
+            annotated,
+            (x, label_y - th - 12),
+            (x + tw + 18, label_y + 6),
+            line_color,
+            -1,
+        )
         cv2.putText(
             annotated,
             text,
@@ -43,6 +65,94 @@ def annotate_faces(image: Image.Image, label: str, confidence: float):
         )
 
     return cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB), faces
+
+
+def predict_emotion_frame(frame_rgb: np.ndarray):
+    """
+    Run full ViT emotion inference on a single RGB frame (numpy array).
+    Draws a face rectangle with the emotion label above it.
+
+    Returns
+    -------
+    annotated_rgb : np.ndarray   — the frame with face box + label drawn on it
+    emotion_label : str          — top predicted emotion
+    confidence    : float        — confidence in [0, 1]
+    probs_dict    : dict         — {emotion: probability} for all classes
+    """
+    processor, model = load_image_model()
+
+    # ── Detect faces first ──────────────────────────────────────────────────
+    faces = detect_faces(frame_rgb)
+
+    # ── Run ViT on the whole frame (it handles its own crop internally) ──────
+    pil_img = Image.fromarray(frame_rgb)
+    inputs = processor(images=pil_img, return_tensors="pt")
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    probs = (
+        torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()[0]
+    )
+    pred_idx   = int(probs.argmax())
+    emotion_label = model.config.id2label[pred_idx]
+    confidence    = float(probs[pred_idx])
+    probs_dict    = {
+        model.config.id2label[i]: float(p) for i, p in enumerate(probs)
+    }
+
+    # ── Draw annotation ─────────────────────────────────────────────────────
+    annotated_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    color_bgr = _EMOTION_BGR.get(emotion_label.lower(), (212, 212, 45))
+
+    if faces:
+        for idx, (x, y, w, h) in enumerate(faces):
+            box_color = color_bgr if idx == 0 else (148, 163, 184)
+            # Rectangle around face
+            cv2.rectangle(annotated_bgr, (x, y), (x + w, y + h), box_color, 2)
+
+            if idx == 0:
+                # Label tag above rectangle
+                tag_text = f"MOOD: {emotion_label.upper()}  {confidence * 100:.0f}%"
+                (tw, th), baseline = cv2.getTextSize(
+                    tag_text, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2
+                )
+                tag_y = max(th + 18, y - 10)
+                # filled badge background
+                cv2.rectangle(
+                    annotated_bgr,
+                    (x, tag_y - th - 10),
+                    (x + tw + 16, tag_y + 4),
+                    box_color,
+                    -1,
+                )
+                cv2.putText(
+                    annotated_bgr,
+                    tag_text,
+                    (x + 8, tag_y - 3),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.62,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+    else:
+        # No face — draw a status banner at the top
+        banner = "No face detected — position your face in front of the camera"
+        cv2.rectangle(annotated_bgr, (0, 0), (frame_rgb.shape[1], 46), (20, 20, 40), -1)
+        cv2.putText(
+            annotated_bgr,
+            banner,
+            (12, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (180, 180, 200),
+            1,
+            cv2.LINE_AA,
+        )
+
+    annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+    return annotated_rgb, emotion_label, confidence, probs_dict
 
 
 def _detect_face_mask(img_np, target_size=224):
