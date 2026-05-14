@@ -2,6 +2,8 @@
 
 MoodSync Studio is a Streamlit application that compares facial emotion with language sentiment to detect whether a person's visible expression and spoken or written message are aligned. It supports image upload, live webcam capture, text input, recorded audio, uploaded audio, attention visualisation, session history, and a practical action-plan view.
 
+Live Demo : https://moodsyncstudio.streamlit.app/
+
 The main idea is simple:
 
 ```text
