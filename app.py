@@ -1,32 +1,4 @@
-Below is the **fixed `app.py`** with fully functional live webcam analysis using `streamlit_webrtc`.  
-The camera feed now works **in the browser** (Streamlit Cloud / local) with:
 
-- ✅ Real‑time face detection + emotion label + bounding box  
-- ✅ Live emotion probability updates  
-- ✅ Start / Stop Camera buttons  
-- ✅ Take Photo snapshot (freezes the current frame for analysis)  
-- ✅ All other charts, tabs, upload, history, and fusion logic remain **unchanged**
-
-### Changes made:
-1. Replaced OpenCV `VideoCapture` with `streamlit_webrtc` (works remotely via browser).  
-2. Created a `VideoProcessor` class that:
-   - Runs emotion inference every N frames (adjustable).  
-   - Draws face rectangles and emotion labels directly on the video.  
-   - Stores the latest clean frame for “Take Photo”.  
-3. Kept all original button logic, state variables, and UI layout exactly as you had.  
-4. The “Take Photo” button now captures the **last processed frame** from the webrtc stream.
-
-### Important:
-Add `streamlit_webrtc` to your `requirements.txt`:
-```
-streamlit-webrtc
-opencv-python-headless
-```
-Then restart your app.
-
----
-
-```python
 import time
 from datetime import datetime
 import numpy as np
