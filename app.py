@@ -760,4 +760,4 @@ with future_tab:
     )
 
 st.markdown('<div class="muted" style="border-top:1px solid rgba(226,232,240,.14);padding-top:1rem;text-align:center;font:600 .72rem JetBrains Mono;margin-top:1rem">MoodSync Studio | ViT emotion | RoBERTa sentiment | Whisper audio | WebRTC live overlay</div>', unsafe_allow_html=True)
-```
+
