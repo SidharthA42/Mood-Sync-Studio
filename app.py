@@ -1,7 +1,6 @@
 import time
-from collections import deque
 from datetime import datetime
-from threading import Lock
+import numpy as np
 
 import cv2
 import plotly.graph_objects as go
@@ -11,19 +10,10 @@ from PIL import Image
 from audio_transcribe import transcribe_audio
 from fusion import load_learned_model, rule_based_fusion
 from generator import generate_summary
-from image_emotion import annotate_faces, detect_faces, predict_emotion
+from image_emotion import annotate_faces, detect_faces, predict_emotion, predict_emotion_frame
 from text_sentiment import predict_sentiment
 from utils import emotion_to_sentiment, label_order_image, label_order_text, load_image_model, load_text_model
 
-try:
-    import av
-    from streamlit_webrtc import webrtc_streamer
-except Exception as exc:
-    WEBRTC_IMPORT_ERROR = str(exc) or "streamlit-webrtc or av is not installed"
-    av = None
-    webrtc_streamer = None
-else:
-    WEBRTC_IMPORT_ERROR = ""
 
 
 st.set_page_config(page_title="MoodSync Studio", page_icon="MS", layout="wide")
@@ -31,8 +21,6 @@ st.set_page_config(page_title="MoodSync Studio", page_icon="MS", layout="wide")
 EMOTION_C = {"happy": "#10b981", "sad": "#6366f1", "angry": "#ef4444", "fear": "#8b5cf6", "disgust": "#f97316", "surprise": "#eab308", "neutral": "#64748b"}
 SENT_C = {"positive": "#10b981", "negative": "#ef4444", "neutral": "#64748b"}
 RGB_C = {"happy": (16, 185, 129), "sad": (99, 102, 241), "angry": (239, 68, 68), "fear": (139, 92, 246), "disgust": (249, 115, 22), "surprise": (234, 179, 8), "neutral": (100, 116, 139)}
-WEBRTC_READY = av is not None and webrtc_streamer is not None
-RTC_CONFIG = {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
 
 
 st.markdown("""
@@ -49,7 +37,7 @@ st.markdown("""
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.15rem}.card{padding:1rem}.label{font:600 .68rem 'JetBrains Mono';color:#8ea0b8;text-transform:uppercase}.value{font-weight:800;font-size:1.5rem;margin:.3rem 0;color:#f8fafc}.note{color:#8ea0b8;font-size:.8rem;line-height:1.42}
 .history-row{display:grid;grid-template-columns:repeat(4,1fr);gap:.85rem}.history-item{border:1px solid rgba(226,232,240,.14);border-radius:8px;background:rgba(255,255,255,.035);padding:.85rem}
 .action-list{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin-bottom:1rem}.action-card{border:1px solid rgba(226,232,240,.14);border-radius:8px;background:rgba(255,255,255,.035);padding:1rem}.action-card h3{font-size:1rem;margin:.1rem 0 .45rem}
-.visual-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:1rem;margin-top:1rem}.visual-stage{min-height:270px;border:1px solid rgba(226,232,240,.14);border-radius:8px;background:radial-gradient(circle at 24% 28%,rgba(45,212,191,.18),transparent 26%),radial-gradient(circle at 78% 72%,rgba(245,158,11,.12),transparent 30%),linear-gradient(135deg,#101a2b,#0b1220);position:relative;overflow:hidden;padding:1rem}.face-demo{position:absolute;left:9%;top:18%;width:42%;height:56%;border:2px solid #2dd4bf;border-radius:8px;background:linear-gradient(145deg,rgba(20,184,166,.12),rgba(15,23,42,.2));box-shadow:0 0 0 1px rgba(45,212,191,.12),0 18px 34px rgba(0,0,0,.18)}.face-demo:before{content:"LIVE MOOD  HAPPY";position:absolute;left:-2px;top:-30px;background:#14b8a6;color:white;font:800 .72rem 'JetBrains Mono';padding:.35rem .55rem;border-radius:6px}.face-demo:after{content:"";position:absolute;inset:12px;border:1px dashed rgba(153,246,228,.22);border-radius:6px}.sticker{position:absolute;border-radius:50%;background:#facc15;border:2px solid rgba(255,255,255,.9);box-shadow:0 10px 24px rgba(250,204,21,.22),0 0 0 8px rgba(250,204,21,.08);z-index:2}.sticker:before,.sticker:after{content:"";position:absolute;top:31%;width:8px;height:8px;border-radius:50%;background:#0f172a}.sticker:before{left:29%}.sticker:after{right:29%}.sticker .mouth{position:absolute;left:27%;top:45%;width:46%;height:25%;border-bottom:4px solid #0f172a;border-radius:0 0 999px 999px}.sticker .blush{position:absolute;left:18%;top:54%;width:10px;height:6px;border-radius:999px;background:#fb7185;box-shadow:38px 0 #fb7185;opacity:.78}.sticker.main{width:74px;height:74px;left:17%;top:29%}.sticker.small{width:48px;height:48px;right:19%;top:18%;transform:rotate(8deg)}.sticker.tiny{width:42px;height:42px;right:17%;bottom:18%;transform:rotate(-10deg)}.sticker.small:before,.sticker.small:after{width:6px;height:6px}.sticker.small .mouth{border-bottom-width:3px}.sticker.small .blush{width:7px;box-shadow:25px 0 #fb7185}.sticker.tiny:before,.sticker.tiny:after{width:5px;height:5px}.sticker.tiny .mouth{border-bottom-width:3px}.sticker.tiny .blush{width:6px;box-shadow:21px 0 #fb7185}.flow-line{position:absolute;left:51%;width:7%;height:2px;background:linear-gradient(90deg,#2dd4bf,#8b5cf6);opacity:.85}.flow-line.one{top:31%}.flow-line.two{top:54%}.flow-line.three{top:76%}.flow-dot{position:absolute;left:57.2%;width:9px;height:9px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 0 7px rgba(45,212,191,.09)}.flow-dot.one{top:29.5%}.flow-dot.two{top:52.5%}.flow-dot.three{top:74.5%;background:#f59e0b}.signal-demo{position:absolute;right:5%;top:15%;width:37%;display:grid;gap:.65rem}.signal-card{border:1px solid rgba(226,232,240,.14);background:rgba(255,255,255,.045);border-radius:8px;padding:.8rem}.mini-bar{height:8px;border-radius:999px;background:#1e293b;overflow:hidden;margin-top:.45rem}.mini-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#14b8a6,#7c3aed)}.roadmap-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-top:1rem}.roadmap-card{border:1px solid rgba(226,232,240,.14);background:linear-gradient(180deg,rgba(20,31,51,.98),rgba(16,26,43,.96));border-radius:8px;padding:1rem;min-height:150px}
+.visual-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:1rem;margin-top:1rem}.visual-stage{min-height:270px;border:1px solid rgba(226,232,240,.14);border-radius:8px;background:radial-gradient(circle at 24% 28%,rgba(45,212,191,.18),transparent 26%),radial-gradient(circle at 78% 72%,rgba(245,158,11,.12),transparent 30%),linear-gradient(135deg,#101a2b,#0b1220);position:relative;overflow:hidden;padding:1rem}.face-demo{position:absolute;left:9%;top:18%;width:42%;height:56%;border:2px solid #2dd4bf;border-radius:8px;background:linear-gradient(145deg,rgba(20,184,166,.12),rgba(15,23,42,.2));box-shadow:0 0 0 1px rgba(45,212,191,.12),0 18px 34px rgba(0,0,0,.18)}.face-demo:before{content:"LIVE MOOD  HAPPY";position:absolute;left:-2px;top:-30px;background:#14b8a6;color:white;font:800 .72rem 'JetBrains Mono';padding:.35rem .55rem;border-radius:6px}.face-demo:after{content:"";position:absolute;inset:12px;border:1px dashed rgba(153,246,228,.22);border-radius:6px}.sticker{position:absolute;border-radius:50%;background:#facc15;border:2px solid rgba(255,255,255,.9);box-shadow:0 10px 24px rgba(250,204,21,.22),0 0 0 8px rgba(250,204,21,.08);z-index:2}.sticker:before,.sticker:after{content:"";position:absolute;top:31%;width:8px;height:8px;border-radius:50%;background:#0f172a}.sticker:before{left:29%}.sticker:after{right:29%}.sticker .mouth{position:absolute;left:27%;top:45%;width:46%;height:25%;border-bottom:4px solid #0f172a;border-radius:0 0 999px 999px}.sticker .blush{position:absolute;left:18%;top:54%;width:10px;height:6px;border-radius:999px;background:#fb7185;box-shadow:38px 0 #fb7185;opacity:.78}.sticker.main{width:74px;height:74px;left:17%;top:29%}.sticker.small{width:48px;height:48px;right:19%;top:18%;transform:rotate(8deg)}.sticker.small:before,.sticker.small:after{width:6px;height:6px}.sticker.small .mouth{border-bottom-width:3px}.sticker.small .blush{width:7px;box-shadow:25px 0 #fb7185}.sticker.tiny:before,.sticker.tiny:after{width:5px;height:5px}.sticker.tiny .mouth{border-bottom-width:3px}.sticker.tiny .blush{width:6px;box-shadow:21px 0 #fb7185}.flow-line{position:absolute;left:51%;width:7%;height:2px;background:linear-gradient(90deg,#2dd4bf,#8b5cf6);opacity:.85}.flow-line.one{top:31%}.flow-line.two{top:54%}.flow-line.three{top:76%}.flow-dot{position:absolute;left:57.2%;width:9px;height:9px;border-radius:50%;background:#2dd4bf;box-shadow:0 0 0 7px rgba(45,212,191,.09)}.flow-dot.one{top:29.5%}.flow-dot.two{top:52.5%}.flow-dot.three{top:74.5%;background:#f59e0b}.signal-demo{position:absolute;right:5%;top:15%;width:37%;display:grid;gap:.65rem}.signal-card{border:1px solid rgba(226,232,240,.14);background:rgba(255,255,255,.045);border-radius:8px;padding:.8rem}.mini-bar{height:8px;border-radius:999px;background:#1e293b;overflow:hidden;margin-top:.45rem}.mini-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,#14b8a6,#7c3aed)}.roadmap-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-top:1rem}.roadmap-card{border:1px solid rgba(226,232,240,.14);background:linear-gradient(180deg,rgba(20,31,51,.98),rgba(16,26,43,.96));border-radius:8px;padding:1rem;min-height:150px}
 .button-row{max-width:360px;margin:.9rem auto 1.15rem}.download-space{height:.85rem}.chart-space{height:1.15rem}.input-button-space{height:.55rem}.stTabs [data-baseweb="tab-list"]{gap:1.1rem;border-bottom:1px solid rgba(226,232,240,.14);padding-bottom:.25rem}
 .stTabs [data-baseweb="tab"]{border-radius:8px!important;color:#8ea0b8!important;font-weight:800!important;background:rgba(255,255,255,.025)!important;border:1px solid rgba(226,232,240,.1)!important;padding:.58rem 1.15rem!important}
 .stTabs [aria-selected="true"]{background:rgba(45,212,191,.1)!important;color:#fff!important;border-color:rgba(45,212,191,.35)!important}.stTabs [data-baseweb="tab-panel"]{padding-top:.9rem!important}
@@ -59,6 +47,17 @@ st.markdown("""
 .sync-flow{min-height:235px;height:100%;display:grid;grid-template-columns:minmax(150px,1fr) 34px minmax(135px,.85fr) 34px minmax(130px,.8fr);gap:.5rem;align-items:center}.demo-face,.demo-text,.demo-result{border:1px solid rgba(226,232,240,.16);border-radius:8px;background:rgba(255,255,255,.04);padding:.78rem;min-height:158px}.demo-face{position:relative;border:2px solid #2dd4bf;background:linear-gradient(145deg,rgba(20,184,166,.13),rgba(15,23,42,.24));display:grid;place-items:center}.demo-face:before{content:"LIVE MOOD  HAPPY";position:absolute;left:-2px;top:-32px;background:#14b8a6;color:white;font:800 .68rem 'JetBrains Mono';padding:.36rem .58rem;border-radius:6px}.mood-frame{position:relative;width:122px;height:108px;border:1px dashed rgba(153,246,228,.4);border-radius:8px;display:grid;place-items:center}.mood-frame:before{content:"HAPPY";position:absolute;right:8px;top:8px;background:#0f766e;color:#ccfbf1;font:800 .58rem 'JetBrains Mono';padding:.22rem .38rem;border-radius:5px}.happy-face{position:relative;width:64px;height:64px;border-radius:50%;background:#facc15;border:3px solid rgba(255,255,255,.92);box-shadow:0 0 0 8px rgba(250,204,21,.11),0 14px 22px rgba(0,0,0,.25)}.happy-face:before,.happy-face:after{content:"";position:absolute;top:30%;width:7px;height:8px;border-radius:50%;background:#0f172a}.happy-face:before{left:28%}.happy-face:after{right:28%}.happy-mouth{position:absolute;left:27%;top:46%;width:46%;height:24%;border-bottom:4px solid #0f172a;border-radius:0 0 999px 999px}.happy-blush{position:absolute;left:17%;top:55%;width:9px;height:6px;border-radius:999px;background:#fb7185;box-shadow:34px 0 #fb7185}.demo-symbol{height:34px;width:34px;border-radius:50%;display:grid;place-items:center;background:#111c2e;border:1px solid rgba(45,212,191,.34);color:#99f6e4;font-weight:800;font-size:1.25rem}.sample-text{margin:.65rem 0 .75rem;color:#f8fafc;font-size:.92rem;line-height:1.42}.source-pills{display:flex;gap:.35rem;flex-wrap:wrap}.source-pills span,.result-choice span{font:700 .58rem 'JetBrains Mono';border:1px solid rgba(226,232,240,.14);border-radius:999px;padding:.25rem .4rem;color:#8ea0b8}.source-pills span:first-child{color:#bfdbfe;border-color:rgba(96,165,250,.35);background:rgba(96,165,250,.08)}.demo-result{display:grid;align-content:center}.result-choice{display:flex;gap:.35rem;flex-wrap:wrap;margin:.55rem 0}.result-choice span.active{color:#fed7aa;border-color:rgba(245,158,11,.55);background:rgba(245,158,11,.12)}
 @media(max-width:900px){.grid3,.history-row,.action-list,.visual-grid,.roadmap-grid{grid-template-columns:1fr}.chips{display:none}.hero h1{font-size:1.45rem}.name{font-size:1.1rem}.visual-stage{min-height:470px}.face-demo{left:8%;top:14%;width:84%;height:170px}.signal-demo{left:8%;right:auto;top:57%;width:84%}.flow-line,.flow-dot{display:none}}
 @media(max-width:900px){.sync-flow{grid-template-columns:1fr;min-height:auto}.demo-symbol{justify-self:center}.visual-stage{min-height:auto}}
+
+/* ── webcam live styles ── */
+.live-badge{display:inline-flex;align-items:center;gap:6px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.35);border-radius:999px;padding:.28rem .75rem;font:600 .7rem 'JetBrains Mono';color:#10b981;margin-bottom:.7rem}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#10b981;animation:blink 1.2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
+.emotion-box{border:1px solid rgba(226,232,240,.14);border-radius:8px;background:rgba(255,255,255,.03);padding:1rem;text-align:center;margin-top:.75rem}
+.emotion-name{font-size:2rem;font-weight:800;letter-spacing:-.5px;margin:.2rem 0}
+.emotion-conf{font:500 .75rem 'JetBrains Mono';color:#8ea0b8}
+.cam-hint{border:1px solid rgba(45,212,191,.2);background:rgba(45,212,191,.05);border-radius:8px;padding:.7rem .9rem;color:#99f6e4;font-size:.8rem;line-height:1.55;margin-bottom:.8rem}
+.snapshot-box{border:2px solid rgba(45,212,191,.4);border-radius:8px;padding:.75rem;margin-top:.75rem;background:rgba(45,212,191,.04)}
+.snapshot-label{font:600 .68rem 'JetBrains Mono';color:#2dd4bf;text-transform:uppercase;letter-spacing:1px;margin-bottom:.5rem}
 </style>
 """, unsafe_allow_html=True)
 
@@ -84,186 +83,16 @@ def init_state():
         "smile_cascade": None,
         "analysis_history": [],
         "latest_source": None,
+        # new keys for the revamped webcam tab
+        "webcam_running": False,
+        "webcam_cam_version": 0,
+        "webcam_snapshot": None,        # PIL Image of the snapshot (clean)
+        "webcam_snapshot_annot": None,  # PIL Image with face box drawn on
+        "webcam_snapshot_label": None,
+        "webcam_snapshot_conf": None,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
-
-
-def release_camera():
-    cap = st.session_state.get("camera")
-    if cap is not None:
-        try:
-            cap.release()
-        except Exception:
-            pass
-    st.session_state.camera = None
-
-
-def get_camera():
-    cap = st.session_state.get("camera")
-    if cap is None or not cap.isOpened():
-        backend = getattr(cv2, "CAP_DSHOW", 0)
-        cap = cv2.VideoCapture(0, backend)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-        st.session_state.camera = cap
-    return cap
-
-
-def blend_history(probs):
-    hist = st.session_state.cam_history
-    hist.append(probs)
-    st.session_state.cam_history = hist[-5:]
-    totals = {}
-    for item in st.session_state.cam_history:
-        for label, value in item.items():
-            totals[label] = totals.get(label, 0.0) + float(value)
-    averaged = {label: value / len(st.session_state.cam_history) for label, value in totals.items()}
-    label = max(averaged, key=averaged.get)
-    return label, averaged[label], averaged
-
-
-def estimate_fast_live_mood(frame_rgb, faces):
-    if not faces:
-        return "Scanning", 0.0, {}
-    cascade = st.session_state.get("smile_cascade")
-    if cascade is None:
-        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_smile.xml")
-        st.session_state.smile_cascade = cascade
-
-    x, y, w, h = faces[0]
-    face_gray = cv2.cvtColor(frame_rgb[y:y + h, x:x + w], cv2.COLOR_RGB2GRAY)
-    smiles = cascade.detectMultiScale(face_gray, scaleFactor=1.7, minNeighbors=20, minSize=(25, 12))
-    if len(smiles) > 0:
-        probs = {"happy": 0.72, "neutral": 0.20, "surprise": 0.08}
-    else:
-        probs = {"neutral": 0.62, "happy": 0.18, "sad": 0.10, "angry": 0.10}
-    label = max(probs, key=probs.get)
-    return label, probs[label], probs
-
-
-def draw_live_overlay(frame_rgb, faces):
-    output = frame_rgb.copy()
-    label = st.session_state.cam_label or "Scanning"
-    conf = st.session_state.cam_conf
-    color = RGB_C.get(label.lower(), (45, 212, 191))
-    if not faces:
-        cv2.rectangle(output, (18, 18), (210, 56), (15, 23, 42), -1)
-        cv2.putText(output, "No face detected", (30, 44), cv2.FONT_HERSHEY_SIMPLEX, .62, (226, 232, 240), 2, cv2.LINE_AA)
-        return output
-    for index, (x, y, w, h) in enumerate(faces):
-        line = color if index == 0 else (148, 163, 184)
-        cv2.rectangle(output, (x, y), (x + w, y + h), line, 2)
-        text = f"{label.upper()} {conf * 100:.0f}%" if index == 0 else "FACE"
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .62, 2)
-        ly = max(30, y - 12)
-        cv2.rectangle(output, (x, ly - th - 12), (x + tw + 18, ly + 6), line, -1)
-        cv2.putText(output, text, (x + 9, ly - 4), cv2.FONT_HERSHEY_SIMPLEX, .62, (255, 255, 255), 2, cv2.LINE_AA)
-    return output
-
-
-def live_camera_frame():
-    cap = get_camera()
-    ok, frame_bgr = cap.read()
-    if not ok:
-        return None, "OpenCV could not read from camera index 0. Close other camera apps and try again."
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    st.session_state.latest_clean_rgb = frame_rgb.copy()
-    faces = detect_faces(frame_rgb)
-    st.session_state.cam_faces = len(faces)
-    now = time.time()
-    if now - st.session_state.cam_last_infer > 0.18:
-        label, conf, probs = estimate_fast_live_mood(frame_rgb, faces)
-        if probs:
-            label, conf, probs = blend_history(probs)
-        st.session_state.cam_label = label
-        st.session_state.cam_conf = conf
-        st.session_state.cam_probs = probs
-        st.session_state.cam_last_infer = now
-    return draw_live_overlay(frame_rgb, faces), None
-
-
-class BrowserLiveMoodProcessor:
-    def __init__(self):
-        self.lock = Lock()
-        self.history = deque(maxlen=5)
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-        self.smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_smile.xml")
-        self.latest_clean_rgb = None
-        self.current_label = "Scanning"
-        self.current_confidence = 0.0
-        self.face_count = 0
-
-    def _detect_faces(self, frame_rgb):
-        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.08, minNeighbors=5, minSize=(42, 42))
-        return sorted([tuple(map(int, face)) for face in faces], key=lambda f: f[2] * f[3], reverse=True)
-
-    def _estimate_mood(self, frame_rgb, faces):
-        if not faces:
-            return "Scanning", 0.0, {}
-
-        x, y, w, h = faces[0]
-        face_gray = cv2.cvtColor(frame_rgb[y:y + h, x:x + w], cv2.COLOR_RGB2GRAY)
-        smiles = self.smile_cascade.detectMultiScale(face_gray, scaleFactor=1.7, minNeighbors=20, minSize=(25, 12))
-        if len(smiles) > 0:
-            probs = {"happy": 0.72, "neutral": 0.20, "surprise": 0.08}
-        else:
-            probs = {"neutral": 0.62, "happy": 0.18, "sad": 0.10, "angry": 0.10}
-
-        self.history.append(probs)
-        totals = {}
-        for item in self.history:
-            for label, value in item.items():
-                totals[label] = totals.get(label, 0.0) + float(value)
-        averaged = {label: value / len(self.history) for label, value in totals.items()}
-        label = max(averaged, key=averaged.get)
-        return label, averaged[label], averaged
-
-    def _draw_overlay(self, frame_bgr, faces, label, confidence):
-        output = frame_bgr.copy()
-        if not faces:
-            cv2.rectangle(output, (18, 18), (234, 58), (42, 29, 16), -1)
-            cv2.rectangle(output, (18, 18), (234, 58), (191, 184, 20), 1)
-            cv2.putText(output, "No face detected", (30, 45), cv2.FONT_HERSHEY_SIMPLEX, .62, (240, 244, 255), 2, cv2.LINE_AA)
-            return output
-
-        color_rgb = RGB_C.get(label.lower(), (45, 212, 191))
-        color = (color_rgb[2], color_rgb[1], color_rgb[0])
-        for index, (x, y, w, h) in enumerate(faces):
-            line = color if index == 0 else (148, 163, 184)
-            cv2.rectangle(output, (x, y), (x + w, y + h), line, 2)
-            text = f"LIVE MOOD {label.upper()} {confidence * 100:.0f}%" if index == 0 else "FACE"
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, .58, 2)
-            ly = max(31, y - 12)
-            cv2.rectangle(output, (x, ly - th - 12), (x + tw + 18, ly + 7), line, -1)
-            cv2.putText(output, text, (x + 9, ly - 4), cv2.FONT_HERSHEY_SIMPLEX, .58, (255, 255, 255), 2, cv2.LINE_AA)
-        return output
-
-    def recv(self, frame):
-        frame_bgr = frame.to_ndarray(format="bgr24")
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        faces = self._detect_faces(frame_rgb)
-        label, confidence, _ = self._estimate_mood(frame_rgb, faces)
-
-        with self.lock:
-            self.latest_clean_rgb = frame_rgb.copy()
-            self.current_label = label
-            self.current_confidence = confidence
-            self.face_count = len(faces)
-
-        output = self._draw_overlay(frame_bgr, faces, label, confidence)
-        return av.VideoFrame.from_ndarray(output, format="bgr24")
-
-    def snapshot(self):
-        with self.lock:
-            return None if self.latest_clean_rgb is None else self.latest_clean_rgb.copy()
-
-    def stats(self):
-        with self.lock:
-            return self.current_label, self.current_confidence, self.face_count
 
 
 def chart_probs(probs, colors, title, horizontal=False, height=210, key=None, percent=True):
@@ -308,7 +137,7 @@ def sentiment_donut(probs, key=None):
 
 
 def token_chart(attention, key=None):
-    clean = [(a.replace("\u0120", "").replace("Ġ", "").replace("Ä ", "").strip(), w) for a, w in attention or [] if a.strip()]
+    clean = [(a.replace("\u0120", "").replace("Ġ", "").replace("Ä ", "").strip(), w) for a, w in attention or [] if a.strip()]
     if not clean:
         return
     toks, weights = zip(*clean)
@@ -532,6 +361,8 @@ def show_results(img, txt, fus, show_heatmap, show_tokens, prefix):
         st.markdown(f'<div class="panel"><div class="pt">Summary <span class="pill">{fus["method"]}</span></div><div class="muted">{fus["summary"]}</div></div>', unsafe_allow_html=True)
 
 
+
+# ── Boot ──────────────────────────────────────────────────────────────────────
 init_state()
 
 st.markdown('<div class="top"><div class="brand"><div class="logo">M</div><div><div class="name">MoodSync Studio</div><div class="sub">facial mood + language fusion</div></div></div><div class="chips"><span class="chip">OpenCV Webcam</span><span class="chip">Face Box</span><span class="chip">Heatmap</span><span class="chip">Token Attention</span><span class="chip">Fusion</span></div></div>', unsafe_allow_html=True)
@@ -544,6 +375,7 @@ overview, upload_tab, webcam_tab, history_tab, plan_tab, future_tab = st.tabs(
     ["Overview", "Upload Image Analysis", "Live Webcam Analysis", "Analysis History", "Action Plan", "Future Roadmap"]
 )
 
+# ── Overview ──────────────────────────────────────────────────────────────────
 with overview:
     st.markdown("""
     <div class="hero">
@@ -588,6 +420,7 @@ with overview:
     </div>
     """, unsafe_allow_html=True)
 
+# ── Upload tab ────────────────────────────────────────────────────────────────
 with upload_tab:
     left, right = st.columns(2, gap="large")
     with left:
@@ -618,57 +451,185 @@ with upload_tab:
     else:
         st.info("Upload an image and provide either text or a transcribed audio recording/upload.")
 
+
+# ── Webcam tab ────────────────────────────────────────────────────────────────
 with webcam_tab:
     left, right = st.columns(2, gap="large")
-    with left:
-        st.markdown('<div class="panel"><div class="pt">Live webcam <span class="pill">browser live</span></div>', unsafe_allow_html=True)
-        if st.session_state.camera_on:
-            st.session_state.camera_on = False
-            release_camera()
 
-        if WEBRTC_READY:
-            st.markdown('<div class="camera-note">Click START and allow camera permission. The live video comes from your browser through WebRTC, so it works on Streamlit Cloud while still drawing the live mood rectangle on each frame.</div>', unsafe_allow_html=True)
-            ctx = webrtc_streamer(
-                key="moodsync_live_mood",
-                rtc_configuration=RTC_CONFIG,
-                video_processor_factory=BrowserLiveMoodProcessor,
-                media_stream_constraints={"video": True, "audio": False},
-                async_processing=True,
-            )
-            if ctx.video_processor:
-                label, confidence, face_count = ctx.video_processor.stats()
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Live mood", label)
-                m2.metric("Confidence", pct(confidence))
-                m3.metric("Faces", face_count)
-                if st.button("Capture Current Frame", use_container_width=True, key="capture_webrtc_frame"):
-                    frame_rgb = ctx.video_processor.snapshot()
-                    if frame_rgb is not None:
-                        st.session_state.captured_frame = Image.fromarray(frame_rgb).convert("RGB")
-                        st.rerun()
-                    st.warning("Start the live camera and wait for a visible frame before capturing.")
-            else:
-                st.caption("Start the live camera to see the mood overlay and capture a frame for analysis.")
+    EM_BGR = {
+        "happy":   (129, 185,  16), "sad":     (241, 102,  99),
+        "angry":   ( 68,  68, 239), "fear":    (246,  92, 139),
+        "disgust": ( 22, 115, 249), "surprise":(  8, 179, 234),
+        "neutral": (139, 116, 100),
+    }
+    FACE_CASCADE = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+
+    def _draw_overlay(frame_bgr, label, conf):
+        gray  = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        faces = FACE_CASCADE.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
+        colour = EM_BGR.get(label.lower(), (45, 212, 191))
+        if len(faces):
+            for (x, y, w, h) in faces:
+                cv2.rectangle(frame_bgr, (x, y), (x + w, y + h), colour, 2)
+                tag = f"{label.upper()}  {conf * 100:.0f}%"
+                (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(frame_bgr, (x, y - th - 12), (x + tw + 10, y), colour, -1)
+                cv2.putText(frame_bgr, tag, (x + 5, y - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         else:
-            st.error("Live browser video is not available because Streamlit Cloud did not load streamlit-webrtc/av.")
-            st.caption(f"Import status: {WEBRTC_IMPORT_ERROR}")
-            st.code("streamlit-webrtc==0.64.6\nav==16.1.0", language="text")
-            st.caption("If your deploy logs still show av==12.3.0 or streamlit-webrtc==0.47.9, GitHub still has the old requirements.txt.")
-            if st.button("Use Photo Fallback", use_container_width=True, key="enable_photo_fallback"):
-                st.session_state.use_photo_fallback = True
-            if st.session_state.get("use_photo_fallback"):
-                browser_capture = st.camera_input("Take a webcam photo", key="webcam_browser_capture")
-                if browser_capture is not None:
-                    st.session_state.captured_frame = Image.open(browser_capture).convert("RGB")
+            h_f, w_f = frame_bgr.shape[:2]
+            cv2.rectangle(frame_bgr, (0, h_f - 36), (w_f, h_f), (20, 20, 30), -1)
+            cv2.putText(frame_bgr, "No face detected", (10, h_f - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 116, 139), 1)
+        return frame_bgr
 
-        if st.session_state.captured_frame is not None:
-            st.image(st.session_state.captured_frame, caption="Clean captured frame", use_container_width=True)
-            if st.button("Clear captured frame", use_container_width=True, key="clear_captured_frame"):
-                st.session_state.captured_frame = None
+    with left:
+        st.markdown('<div class="panel"><div class="pt">Live Webcam <span class="pill">real-time mood</span></div>', unsafe_allow_html=True)
+
+        btn_c1, btn_c2, btn_c3 = st.columns(3, gap="small")
+        with btn_c1:
+            start_clicked = st.button("▶  Start Camera", use_container_width=True,
+                                      key="webcam_start",
+                                      disabled=st.session_state.webcam_running)
+        with btn_c2:
+            stop_clicked  = st.button("■  Stop Camera",  use_container_width=True,
+                                      key="webcam_stop",
+                                      disabled=not st.session_state.webcam_running)
+        with btn_c3:
+            photo_clicked = st.button("📸  Take Photo",  use_container_width=True,
+                                      key="webcam_take_photo",
+                                      disabled=not st.session_state.webcam_running)
+
+        if start_clicked:
+            st.session_state.webcam_running        = True
+            st.session_state.webcam_snapshot       = None
+            st.session_state.webcam_snapshot_annot = None
+            st.session_state.captured_frame        = None
+            st.rerun()
+
+        if stop_clicked:
+            st.session_state.webcam_running = False
+            st.rerun()
+
+        st.markdown('<div class="input-button-space"></div>', unsafe_allow_html=True)
+
+        if st.session_state.webcam_running:
+            st.markdown("""
+            <div class="cam-hint">
+              Camera is live — face rectangle and emotion label update in real time.
+              Click <strong>📸 Take Photo</strong> to freeze the current frame,
+              then fill in text/audio and click <strong>Analyse</strong>.
+            </div>
+            """, unsafe_allow_html=True)
+
+            live_frame_slot = st.empty()
+            live_badge_slot = st.empty()
+
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                st.error("Could not open webcam (device 0). Make sure no other app is using the camera, then click Start Camera again.")
+                st.session_state.webcam_running = False
+            else:
+                INFER_EVERY = 6
+                frame_count = 0
+                cur_label   = "Scanning"
+                cur_conf    = 0.0
+                cur_probs   = {}
+                last_clean  = None
+
+                while st.session_state.webcam_running:
+                    ret, frame_bgr = cap.read()
+                    if not ret:
+                        break
+
+                    frame_bgr  = cv2.flip(frame_bgr, 1)
+                    frame_rgb  = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                    last_clean = frame_rgb.copy()
+
+                    if frame_count % INFER_EVERY == 0:
+                        try:
+                            _, lbl, conf, probs = predict_emotion_frame(frame_rgb)
+                            cur_label = lbl
+                            cur_conf  = conf
+                            cur_probs = probs
+                        except Exception:
+                            pass
+                    frame_count += 1
+
+                    annotated_bgr = _draw_overlay(frame_bgr.copy(), cur_label, cur_conf)
+                    annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
+                    live_frame_slot.image(annotated_rgb, channels="RGB", use_container_width=True)
+
+                    em_color = EMOTION_C.get(cur_label.lower(), "#2dd4bf")
+                    live_badge_slot.markdown(
+                        f'<div class="emotion-box">'
+                        f'<div style="font:600 .68rem JetBrains Mono;color:#8ea0b8;text-transform:uppercase;letter-spacing:1px">Live Emotion</div>'
+                        f'<div class="emotion-name" style="color:{em_color}">{cur_label.upper()}</div>'
+                        f'<div class="emotion-conf">{cur_conf * 100:.1f}% confidence</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+                    if photo_clicked and last_clean is not None:
+                        pil_clean = Image.fromarray(last_clean)
+                        ann_bgr   = _draw_overlay(
+                            cv2.cvtColor(last_clean, cv2.COLOR_RGB2BGR), cur_label, cur_conf
+                        )
+                        pil_annot = Image.fromarray(cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB))
+                        st.session_state.webcam_snapshot       = pil_clean
+                        st.session_state.webcam_snapshot_annot = pil_annot
+                        st.session_state.captured_frame        = pil_clean
+                        st.session_state.webcam_snapshot_label = cur_label
+                        st.session_state.webcam_snapshot_conf  = cur_conf
+                        st.session_state.cam_label             = cur_label
+                        st.session_state.cam_conf              = cur_conf
+                        st.session_state.cam_probs             = cur_probs
+                        st.session_state.webcam_running        = False
+                        cap.release()
+                        st.rerun()
+
+                    time.sleep(0.03)
+
+                cap.release()
+
+        else:
+            st.markdown("""
+            <div style="text-align:center;padding:2.8rem 1rem;color:#8ea0b8;">
+              <div style="font-size:2.4rem;opacity:.2;margin-bottom:.8rem">◈</div>
+              <div style="font-size:.88rem;font-weight:600">Click <strong style="color:#f8fafc">▶ Start Camera</strong> to open the live feed</div>
+              <div style="font-size:.76rem;opacity:.6;margin-top:.4rem">Face box and emotion label update in real time on the video</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if st.session_state.webcam_snapshot is not None:
+            st.markdown('<div class="snapshot-box"><div class="snapshot-label">📸 Snapshot — ready to analyse</div>', unsafe_allow_html=True)
+            annot    = st.session_state.get("webcam_snapshot_annot") or st.session_state.webcam_snapshot
+            snap_lbl = st.session_state.webcam_snapshot_label or "—"
+            snap_cf  = st.session_state.webcam_snapshot_conf  or 0.0
+            em_color = EMOTION_C.get(snap_lbl.lower(), "#2dd4bf")
+            st.image(annot, use_container_width=True)
+            st.markdown(
+                f'<div style="text-align:center;margin-top:.4rem">'
+                f'<span style="font:600 .68rem JetBrains Mono;color:#8ea0b8;text-transform:uppercase">Captured: </span>'
+                f'<span style="font-weight:800;color:{em_color}">{snap_lbl.upper()}</span>'
+                f'<span style="font:500 .72rem JetBrains Mono;color:#8ea0b8">  {snap_cf*100:.1f}%</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+            if st.button("🗑  Discard & retake", use_container_width=True, key="webcam_discard_snap"):
+                st.session_state.webcam_snapshot       = None
+                st.session_state.webcam_snapshot_annot = None
+                st.session_state.captured_frame        = None
                 st.rerun()
+
         st.markdown("</div>", unsafe_allow_html=True)
+
     with right:
         text, transcript, _audio_supplied = text_audio_box("webcam")
+
     c1, c2, c3 = st.columns(3)
     with c1:
         heatmap = st.checkbox("Attention heatmap", value=True, key="webcam_heatmap")
@@ -676,19 +637,24 @@ with webcam_tab:
         tokens = st.checkbox("Token attention distribution", value=True, key="webcam_tokens")
     with c3:
         learned = st.checkbox("Learned fusion", value=False, key="webcam_learned")
+
     st.markdown('<div class="button-row">', unsafe_allow_html=True)
     language_ready = bool(text or transcript)
     ready = st.session_state.captured_frame is not None and language_ready
     if st.button("Analyse", disabled=not ready, use_container_width=True, key="webcam_analyse"):
         with st.spinner("Analysing captured frame, text, and fusion..."):
-            st.session_state.webcam_result = analyse_all(st.session_state.captured_frame, text, transcript, heatmap, tokens, learned)
+            st.session_state.webcam_result = analyse_all(
+                st.session_state.captured_frame, text, transcript, heatmap, tokens, learned
+            )
             record_history("Webcam", st.session_state.webcam_result)
     st.markdown("</div>", unsafe_allow_html=True)
+
     if st.session_state.webcam_result:
         show_results(*st.session_state.webcam_result, heatmap, tokens, "webcam")
     else:
-        st.info("Take a webcam photo and provide either text or a transcribed audio recording/upload.")
+        st.info("Start the camera, take a photo, then provide text or audio and click Analyse.")
 
+# ── History tab ───────────────────────────────────────────────────────────────
 with history_tab:
     history = st.session_state.analysis_history
     st.markdown('<div class="hero"><div class="kicker">Session memory</div><h1>Track recent analyses and compare emotional patterns.</h1><p>This tab automatically stores your latest upload and webcam runs during the current session, making it easier to compare repeated mismatch or alignment patterns.</p></div>', unsafe_allow_html=True)
@@ -720,6 +686,7 @@ with history_tab:
             st.session_state.analysis_history = []
             st.rerun()
 
+# ── Action Plan tab ───────────────────────────────────────────────────────────
 with plan_tab:
     source, result = latest_result()
     st.markdown('<div class="hero"><div class="kicker">Decision support</div><h1>Turn the latest analysis into a practical response plan.</h1><p>This tab adds a mismatch score, suggested next steps, follow-up prompts, and a downloadable report for the most recent run.</p></div>', unsafe_allow_html=True)
@@ -756,6 +723,7 @@ with plan_tab:
             use_container_width=True,
         )
 
+# ── Future tab ────────────────────────────────────────────────────────────────
 with future_tab:
     st.markdown(
         """
@@ -775,9 +743,5 @@ with future_tab:
         """,
         unsafe_allow_html=True,
     )
-
-if st.session_state.camera_on:
-    time.sleep(0.04)
-    st.rerun()
 
 st.markdown('<div class="muted" style="border-top:1px solid rgba(226,232,240,.14);padding-top:1rem;text-align:center;font:600 .72rem JetBrains Mono;margin-top:1rem">MoodSync Studio | ViT emotion | RoBERTa sentiment | Whisper audio | OpenCV webcam overlay</div>', unsafe_allow_html=True)
