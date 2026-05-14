@@ -14,14 +14,11 @@ from image_emotion import annotate_faces, detect_faces, predict_emotion, predict
 from text_sentiment import predict_sentiment
 from utils import emotion_to_sentiment, label_order_image, label_order_text, load_image_model, load_text_model
 
-
-
 st.set_page_config(page_title="MoodSync Studio", page_icon="MS", layout="wide")
 
 EMOTION_C = {"happy": "#10b981", "sad": "#6366f1", "angry": "#ef4444", "fear": "#8b5cf6", "disgust": "#f97316", "surprise": "#eab308", "neutral": "#64748b"}
 SENT_C = {"positive": "#10b981", "negative": "#ef4444", "neutral": "#64748b"}
 RGB_C = {"happy": (16, 185, 129), "sad": (99, 102, 241), "angry": (239, 68, 68), "fear": (139, 92, 246), "disgust": (249, 115, 22), "surprise": (234, 179, 8), "neutral": (100, 116, 139)}
-
 
 st.markdown("""
 <style>
@@ -83,13 +80,17 @@ def init_state():
         "smile_cascade": None,
         "analysis_history": [],
         "latest_source": None,
-        # new keys for the revamped webcam tab
         "webcam_running": False,
         "webcam_cam_version": 0,
-        "webcam_snapshot": None,        # PIL Image of the snapshot (clean)
-        "webcam_snapshot_annot": None,  # PIL Image with face box drawn on
+        "webcam_snapshot": None,
+        "webcam_snapshot_annot": None,
         "webcam_snapshot_label": None,
         "webcam_snapshot_conf": None,
+        "webrtc_ctx": None,
+        "last_processed_frame": None,
+        "live_emotion": "Scanning",
+        "live_confidence": 0.0,
+        "custom_cam_active": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -361,21 +362,20 @@ def show_results(img, txt, fus, show_heatmap, show_tokens, prefix):
         st.markdown(f'<div class="panel"><div class="pt">Summary <span class="pill">{fus["method"]}</span></div><div class="muted">{fus["summary"]}</div></div>', unsafe_allow_html=True)
 
 
-
 # ── Boot ──────────────────────────────────────────────────────────────────────
 init_state()
 
-st.markdown('<div class="top"><div class="brand"><div class="logo">M</div><div><div class="name">MoodSync Studio</div><div class="sub">facial mood + language fusion</div></div></div><div class="chips"><span class="chip">OpenCV Webcam</span><span class="chip">Face Box</span><span class="chip">Heatmap</span><span class="chip">Token Attention</span><span class="chip">Fusion</span></div></div>', unsafe_allow_html=True)
+st.markdown('<div class="top"><div class="brand"><div class="logo">M</div><div><div class="name">MoodSync Studio</div><div class="sub">facial mood + language fusion</div></div></div><div class="chips"><span class="chip">Camera Input</span><span class="chip">Face Box</span><span class="chip">Heatmap</span><span class="chip">Token Attention</span><span class="chip">Fusion</span></div></div>', unsafe_allow_html=True)
 
 with st.spinner("Loading models..."):
     load_image_model()
     load_text_model()
 
 overview, upload_tab, webcam_tab, history_tab, plan_tab, future_tab = st.tabs(
-    ["Overview", "Upload Image Analysis", "Live Webcam Analysis", "Analysis History", "Action Plan", "Future Roadmap"]
+    ["Overview", "Upload Image Analysis", "Camera Capture Analysis", "Analysis History", "Action Plan", "Future Roadmap"]
 )
 
-# ── Overview ──────────────────────────────────────────────────────────────────
+# ── Overview (unchanged) ─────────────────────────────────────────────────────
 with overview:
     st.markdown("""
     <div class="hero">
@@ -384,7 +384,7 @@ with overview:
       <p>MoodSync uses a facial emotion model for images or webcam captures, a sentiment model for typed text or audio transcript, and a fusion layer to decide whether the visual and verbal signals are aligned or mismatched.</p>
     </div>
     <div class="grid3">
-      <div class="card"><div class="label">Input</div><div class="value">Face</div><div class="note">Upload an image or capture a clean frame from the live OpenCV webcam preview.</div></div>
+      <div class="card"><div class="label">Input</div><div class="value">Face</div><div class="note">Upload an image or take a photo with your camera. Emotion is displayed immediately on the photo.</div></div>
       <div class="card"><div class="label">Language</div><div class="value">Text / Audio</div><div class="note">Type text, record audio, or upload audio. Text is required only when no audio is provided.</div></div>
       <div class="card"><div class="label">Output</div><div class="value">Fusion</div><div class="note">Mood, sentiment, heatmap, token attention, action plan, and history tracking.</div></div>
     </div>
@@ -420,7 +420,7 @@ with overview:
     </div>
     """, unsafe_allow_html=True)
 
-# ── Upload tab ────────────────────────────────────────────────────────────────
+# ── Upload tab (unchanged) ───────────────────────────────────────────────────
 with upload_tab:
     left, right = st.columns(2, gap="large")
     with left:
@@ -451,185 +451,46 @@ with upload_tab:
     else:
         st.info("Upload an image and provide either text or a transcribed audio recording/upload.")
 
-
-# ── Webcam tab ────────────────────────────────────────────────────────────────
+# ── Camera Capture tab (using st.camera_input) ───────────────────────────────
 with webcam_tab:
     left, right = st.columns(2, gap="large")
 
-    EM_BGR = {
-        "happy":   (129, 185,  16), "sad":     (241, 102,  99),
-        "angry":   ( 68,  68, 239), "fear":    (246,  92, 139),
-        "disgust": ( 22, 115, 249), "surprise":(  8, 179, 234),
-        "neutral": (139, 116, 100),
-    }
-    FACE_CASCADE = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
-
-    def _draw_overlay(frame_bgr, label, conf):
-        gray  = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        faces = FACE_CASCADE.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
-        colour = EM_BGR.get(label.lower(), (45, 212, 191))
-        if len(faces):
-            for (x, y, w, h) in faces:
-                cv2.rectangle(frame_bgr, (x, y), (x + w, y + h), colour, 2)
-                tag = f"{label.upper()}  {conf * 100:.0f}%"
-                (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(frame_bgr, (x, y - th - 12), (x + tw + 10, y), colour, -1)
-                cv2.putText(frame_bgr, tag, (x + 5, y - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        else:
-            h_f, w_f = frame_bgr.shape[:2]
-            cv2.rectangle(frame_bgr, (0, h_f - 36), (w_f, h_f), (20, 20, 30), -1)
-            cv2.putText(frame_bgr, "No face detected", (10, h_f - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 116, 139), 1)
-        return frame_bgr
-
     with left:
-        st.markdown('<div class="panel"><div class="pt">Live Webcam <span class="pill">real-time mood</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel"><div class="pt">Take a photo <span class="pill">camera capture</span></div>', unsafe_allow_html=True)
 
-        btn_c1, btn_c2, btn_c3 = st.columns(3, gap="small")
-        with btn_c1:
-            start_clicked = st.button("▶  Start Camera", use_container_width=True,
-                                      key="webcam_start",
-                                      disabled=st.session_state.webcam_running)
-        with btn_c2:
-            stop_clicked  = st.button("■  Stop Camera",  use_container_width=True,
-                                      key="webcam_stop",
-                                      disabled=not st.session_state.webcam_running)
-        with btn_c3:
-            photo_clicked = st.button("📸  Take Photo",  use_container_width=True,
-                                      key="webcam_take_photo",
-                                      disabled=not st.session_state.webcam_running)
+        # Camera input widget
+        camera_photo = st.camera_input("Take a picture", key="camera_capture")
 
-        if start_clicked:
-            st.session_state.webcam_running        = True
-            st.session_state.webcam_snapshot       = None
-            st.session_state.webcam_snapshot_annot = None
-            st.session_state.captured_frame        = None
-            st.rerun()
-
-        if stop_clicked:
-            st.session_state.webcam_running = False
-            st.rerun()
-
-        st.markdown('<div class="input-button-space"></div>', unsafe_allow_html=True)
-
-        if st.session_state.webcam_running:
-            st.markdown("""
-            <div class="cam-hint">
-              Camera is live — face rectangle and emotion label update in real time.
-              Click <strong>📸 Take Photo</strong> to freeze the current frame,
-              then fill in text/audio and click <strong>Analyse</strong>.
-            </div>
-            """, unsafe_allow_html=True)
-
-            live_frame_slot = st.empty()
-            live_badge_slot = st.empty()
-
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                st.error("Could not open webcam (device 0). Make sure no other app is using the camera, then click Start Camera again.")
-                st.session_state.webcam_running = False
-            else:
-                INFER_EVERY = 6
-                frame_count = 0
-                cur_label   = "Scanning"
-                cur_conf    = 0.0
-                cur_probs   = {}
-                last_clean  = None
-
-                while st.session_state.webcam_running:
-                    ret, frame_bgr = cap.read()
-                    if not ret:
-                        break
-
-                    frame_bgr  = cv2.flip(frame_bgr, 1)
-                    frame_rgb  = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    last_clean = frame_rgb.copy()
-
-                    if frame_count % INFER_EVERY == 0:
-                        try:
-                            _, lbl, conf, probs = predict_emotion_frame(frame_rgb)
-                            cur_label = lbl
-                            cur_conf  = conf
-                            cur_probs = probs
-                        except Exception:
-                            pass
-                    frame_count += 1
-
-                    annotated_bgr = _draw_overlay(frame_bgr.copy(), cur_label, cur_conf)
-                    annotated_rgb = cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB)
-                    live_frame_slot.image(annotated_rgb, channels="RGB", use_container_width=True)
-
-                    em_color = EMOTION_C.get(cur_label.lower(), "#2dd4bf")
-                    live_badge_slot.markdown(
-                        f'<div class="emotion-box">'
-                        f'<div style="font:600 .68rem JetBrains Mono;color:#8ea0b8;text-transform:uppercase;letter-spacing:1px">Live Emotion</div>'
-                        f'<div class="emotion-name" style="color:{em_color}">{cur_label.upper()}</div>'
-                        f'<div class="emotion-conf">{cur_conf * 100:.1f}% confidence</div>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-
-                    if photo_clicked and last_clean is not None:
-                        pil_clean = Image.fromarray(last_clean)
-                        ann_bgr   = _draw_overlay(
-                            cv2.cvtColor(last_clean, cv2.COLOR_RGB2BGR), cur_label, cur_conf
-                        )
-                        pil_annot = Image.fromarray(cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB))
-                        st.session_state.webcam_snapshot       = pil_clean
-                        st.session_state.webcam_snapshot_annot = pil_annot
-                        st.session_state.captured_frame        = pil_clean
-                        st.session_state.webcam_snapshot_label = cur_label
-                        st.session_state.webcam_snapshot_conf  = cur_conf
-                        st.session_state.cam_label             = cur_label
-                        st.session_state.cam_conf              = cur_conf
-                        st.session_state.cam_probs             = cur_probs
-                        st.session_state.webcam_running        = False
-                        cap.release()
-                        st.rerun()
-
-                    time.sleep(0.03)
-
-                cap.release()
-
+        if camera_photo is not None:
+            # Convert to PIL Image
+            img = Image.open(camera_photo).convert("RGB")
+            # Run emotion prediction
+            label, conf, probs, _ = predict_emotion(img, heatmap=False)  # heatmap not needed for preview
+            # Draw face box and label
+            annotated, faces = annotate_faces(img, label, conf)
+            # Store in session state
+            st.session_state.captured_frame = img
+            st.session_state.webcam_snapshot = img
+            st.session_state.webcam_snapshot_annot = annotated
+            st.session_state.webcam_snapshot_label = label
+            st.session_state.webcam_snapshot_conf = conf
+            st.session_state.cam_label = label
+            st.session_state.cam_conf = conf
+            st.session_state.cam_probs = probs
+            # Display annotated image
+            st.image(annotated, caption=f"Mood: {label.upper()} ({pct(conf)} confidence)", use_container_width=True)
         else:
-            st.markdown("""
-            <div style="text-align:center;padding:2.8rem 1rem;color:#8ea0b8;">
-              <div style="font-size:2.4rem;opacity:.2;margin-bottom:.8rem">◈</div>
-              <div style="font-size:.88rem;font-weight:600">Click <strong style="color:#f8fafc">▶ Start Camera</strong> to open the live feed</div>
-              <div style="font-size:.76rem;opacity:.6;margin-top:.4rem">Face box and emotion label update in real time on the video</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        if st.session_state.webcam_snapshot is not None:
-            st.markdown('<div class="snapshot-box"><div class="snapshot-label">📸 Snapshot — ready to analyse</div>', unsafe_allow_html=True)
-            annot    = st.session_state.get("webcam_snapshot_annot") or st.session_state.webcam_snapshot
-            snap_lbl = st.session_state.webcam_snapshot_label or "—"
-            snap_cf  = st.session_state.webcam_snapshot_conf  or 0.0
-            em_color = EMOTION_C.get(snap_lbl.lower(), "#2dd4bf")
-            st.image(annot, use_container_width=True)
-            st.markdown(
-                f'<div style="text-align:center;margin-top:.4rem">'
-                f'<span style="font:600 .68rem JetBrains Mono;color:#8ea0b8;text-transform:uppercase">Captured: </span>'
-                f'<span style="font-weight:800;color:{em_color}">{snap_lbl.upper()}</span>'
-                f'<span style="font:500 .72rem JetBrains Mono;color:#8ea0b8">  {snap_cf*100:.1f}%</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-            if st.button("🗑  Discard & retake", use_container_width=True, key="webcam_discard_snap"):
-                st.session_state.webcam_snapshot       = None
-                st.session_state.webcam_snapshot_annot = None
-                st.session_state.captured_frame        = None
-                st.rerun()
+            st.info("Click the camera button above to take a photo. The face will be detected and emotion displayed immediately.")
+            # Optionally show placeholder
+            st.session_state.captured_frame = None
+            st.session_state.webcam_snapshot = None
 
         st.markdown("</div>", unsafe_allow_html=True)
 
     with right:
         text, transcript, _audio_supplied = text_audio_box("webcam")
 
+    # Options for heatmap/tokens/learned fusion (same as upload tab)
     c1, c2, c3 = st.columns(3)
     with c1:
         heatmap = st.checkbox("Attention heatmap", value=True, key="webcam_heatmap")
@@ -642,7 +503,7 @@ with webcam_tab:
     language_ready = bool(text or transcript)
     ready = st.session_state.captured_frame is not None and language_ready
     if st.button("Analyse", disabled=not ready, use_container_width=True, key="webcam_analyse"):
-        with st.spinner("Analysing captured frame, text, and fusion..."):
+        with st.spinner("Analysing captured image, text, and fusion..."):
             st.session_state.webcam_result = analyse_all(
                 st.session_state.captured_frame, text, transcript, heatmap, tokens, learned
             )
@@ -652,9 +513,12 @@ with webcam_tab:
     if st.session_state.webcam_result:
         show_results(*st.session_state.webcam_result, heatmap, tokens, "webcam")
     else:
-        st.info("Start the camera, take a photo, then provide text or audio and click Analyse.")
+        if st.session_state.captured_frame is None:
+            st.info("Take a photo first, then provide text or audio and click Analyse.")
+        elif not language_ready:
+            st.info("Provide text or audio before clicking Analyse.")
 
-# ── History tab ───────────────────────────────────────────────────────────────
+# ── History tab (unchanged) ──────────────────────────────────────────────────
 with history_tab:
     history = st.session_state.analysis_history
     st.markdown('<div class="hero"><div class="kicker">Session memory</div><h1>Track recent analyses and compare emotional patterns.</h1><p>This tab automatically stores your latest upload and webcam runs during the current session, making it easier to compare repeated mismatch or alignment patterns.</p></div>', unsafe_allow_html=True)
@@ -686,7 +550,7 @@ with history_tab:
             st.session_state.analysis_history = []
             st.rerun()
 
-# ── Action Plan tab ───────────────────────────────────────────────────────────
+# ── Action Plan tab (unchanged) ──────────────────────────────────────────────
 with plan_tab:
     source, result = latest_result()
     st.markdown('<div class="hero"><div class="kicker">Decision support</div><h1>Turn the latest analysis into a practical response plan.</h1><p>This tab adds a mismatch score, suggested next steps, follow-up prompts, and a downloadable report for the most recent run.</p></div>', unsafe_allow_html=True)
@@ -723,7 +587,7 @@ with plan_tab:
             use_container_width=True,
         )
 
-# ── Future tab ────────────────────────────────────────────────────────────────
+# ── Future tab (unchanged) ───────────────────────────────────────────────────
 with future_tab:
     st.markdown(
         """
@@ -744,4 +608,4 @@ with future_tab:
         unsafe_allow_html=True,
     )
 
-st.markdown('<div class="muted" style="border-top:1px solid rgba(226,232,240,.14);padding-top:1rem;text-align:center;font:600 .72rem JetBrains Mono;margin-top:1rem">MoodSync Studio | ViT emotion | RoBERTa sentiment | Whisper audio | OpenCV webcam overlay</div>', unsafe_allow_html=True)
+st.markdown('<div class="muted" style="border-top:1px solid rgba(226,232,240,.14);padding-top:1rem;text-align:center;font:600 .72rem JetBrains Mono;margin-top:1rem">MoodSync Studio | ViT emotion | RoBERTa sentiment | Whisper audio | Camera capture + instant mood preview</div>', unsafe_allow_html=True)
