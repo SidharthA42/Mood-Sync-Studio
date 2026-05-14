@@ -86,11 +86,9 @@ def init_state():
         "webcam_snapshot_annot": None,
         "webcam_snapshot_label": None,
         "webcam_snapshot_conf": None,
-        "webrtc_ctx": None,
         "last_processed_frame": None,
         "live_emotion": "Scanning",
         "live_confidence": 0.0,
-        "custom_cam_active": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -451,46 +449,95 @@ with upload_tab:
     else:
         st.info("Upload an image and provide either text or a transcribed audio recording/upload.")
 
-# ── Camera Capture tab (using st.camera_input) ───────────────────────────────
+# ── Camera Capture tab (with Start/Stop/Take Photo buttons) ───────────────────
 with webcam_tab:
     left, right = st.columns(2, gap="large")
 
     with left:
-        st.markdown('<div class="panel"><div class="pt">Take a photo <span class="pill">camera capture</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel"><div class="pt">Live Webcam <span class="pill">start/stop/take photo</span></div>', unsafe_allow_html=True)
 
-        # Camera input widget
-        camera_photo = st.camera_input("Take a picture", key="camera_capture")
+        btn_c1, btn_c2, btn_c3 = st.columns(3, gap="small")
+        with btn_c1:
+            start_clicked = st.button("▶  Start Camera", use_container_width=True,
+                                      key="webcam_start",
+                                      disabled=st.session_state.webcam_running)
+        with btn_c2:
+            stop_clicked  = st.button("■  Stop Camera",  use_container_width=True,
+                                      key="webcam_stop",
+                                      disabled=not st.session_state.webcam_running)
+        with btn_c3:
+            photo_clicked = st.button("📸  Take Photo",  use_container_width=True,
+                                      key="webcam_take_photo",
+                                      disabled=not st.session_state.webcam_running)
 
-        if camera_photo is not None:
-            # Convert to PIL Image
-            img = Image.open(camera_photo).convert("RGB")
-            # Run emotion prediction
-            label, conf, probs, _ = predict_emotion(img, heatmap=False)  # heatmap not needed for preview
-            # Draw face box and label
-            annotated, faces = annotate_faces(img, label, conf)
-            # Store in session state
-            st.session_state.captured_frame = img
-            st.session_state.webcam_snapshot = img
-            st.session_state.webcam_snapshot_annot = annotated
-            st.session_state.webcam_snapshot_label = label
-            st.session_state.webcam_snapshot_conf = conf
-            st.session_state.cam_label = label
-            st.session_state.cam_conf = conf
-            st.session_state.cam_probs = probs
-            # Display annotated image
-            st.image(annotated, caption=f"Mood: {label.upper()} ({pct(conf)} confidence)", use_container_width=True)
-        else:
-            st.info("Click the camera button above to take a photo. The face will be detected and emotion displayed immediately.")
-            # Optionally show placeholder
-            st.session_state.captured_frame = None
+        if start_clicked:
+            st.session_state.webcam_running = True
             st.session_state.webcam_snapshot = None
+            st.session_state.webcam_snapshot_annot = None
+            st.session_state.captured_frame = None
+            st.rerun()
+
+        if stop_clicked:
+            st.session_state.webcam_running = False
+            st.session_state.webcam_snapshot = None
+            st.session_state.webcam_snapshot_annot = None
+            st.session_state.captured_frame = None
+            st.rerun()
+
+        st.markdown('<div class="input-button-space"></div>', unsafe_allow_html=True)
+
+        # Show camera input only if running
+        if st.session_state.webcam_running:
+            st.markdown("""
+            <div class="cam-hint">
+              Click the camera shutter button below to take a photo. The face will be detected and emotion displayed immediately.
+              Then click <strong>Take Photo</strong> to save this frame for analysis (or it auto-saves when you take the picture).
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Camera widget
+            camera_photo = st.camera_input("Take a picture", key="camera_input_widget")
+
+            # When a new photo is taken, process it immediately
+            if camera_photo is not None:
+                # Convert to PIL Image
+                img = Image.open(camera_photo).convert("RGB")
+                # Run emotion prediction
+                label, conf, probs, _ = predict_emotion(img, heatmap=False)
+                # Draw face box and label
+                annotated, faces = annotate_faces(img, label, conf)
+                # Store in session state (overwrite previous)
+                st.session_state.captured_frame = img
+                st.session_state.webcam_snapshot = img
+                st.session_state.webcam_snapshot_annot = annotated
+                st.session_state.webcam_snapshot_label = label
+                st.session_state.webcam_snapshot_conf = conf
+                st.session_state.cam_label = label
+                st.session_state.cam_conf = conf
+                st.session_state.cam_probs = probs
+                # Display annotated image
+                st.image(annotated, caption=f"Mood: {label.upper()} ({pct(conf)} confidence)", use_container_width=True)
+            else:
+                st.info("Press the shutter button above to take a photo.")
+
+            # Take Photo button: if a photo has already been taken, it just saves it (already done)
+            # We'll also add a manual save button in case the user wants to re-save the same photo.
+            if photo_clicked and st.session_state.captured_frame is not None:
+                st.success("Photo saved! You can now add text/audio and click Analyse.")
+        else:
+            st.markdown("""
+            <div style="text-align:center;padding:2.8rem 1rem;color:#8ea0b8;">
+              <div style="font-size:2.4rem;opacity:.2;margin-bottom:.8rem">◈</div>
+              <div style="font-size:.88rem;font-weight:600">Click <strong style="color:#f8fafc">▶ Start Camera</strong> to open the camera</div>
+              <div style="font-size:.76rem;opacity:.6;margin-top:.4rem">Then take a photo and the emotion will appear instantly</div>
+            </div>
+            """, unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
     with right:
         text, transcript, _audio_supplied = text_audio_box("webcam")
 
-    # Options for heatmap/tokens/learned fusion (same as upload tab)
     c1, c2, c3 = st.columns(3)
     with c1:
         heatmap = st.checkbox("Attention heatmap", value=True, key="webcam_heatmap")
@@ -514,7 +561,7 @@ with webcam_tab:
         show_results(*st.session_state.webcam_result, heatmap, tokens, "webcam")
     else:
         if st.session_state.captured_frame is None:
-            st.info("Take a photo first, then provide text or audio and click Analyse.")
+            st.info("Start camera, take a photo, then provide text or audio and click Analyse.")
         elif not language_ready:
             st.info("Provide text or audio before clicking Analyse.")
 
