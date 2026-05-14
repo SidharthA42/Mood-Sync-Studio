@@ -448,12 +448,12 @@ with upload_tab:
     else:
         st.info("Upload an image and provide either text or a transcribed audio recording/upload.")
 
-# ── WEBCAM TAB — OpenCV loop, no WebRTC ───────────────────────────────────────
+# ── WEBCAM TAB — browser camera via st.camera_input ─────────────────────────
 with webcam_tab:
     left, right = st.columns(2, gap="large")
 
     with left:
-        st.markdown('<div class="panel"><div class="pt">Live webcam <span class="pill">opencv · real-time</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="panel"><div class="pt">Live webcam <span class="pill">browser camera</span></div>', unsafe_allow_html=True)
 
         # ── buttons ──────────────────────────────────────────────────────────
         btn_c1, btn_c2, btn_c3 = st.columns(3, gap="small")
@@ -466,182 +466,83 @@ with webcam_tab:
                                      key="webcam_stop",
                                      disabled=not st.session_state.webcam_running)
         with btn_c3:
-            photo_clicked = st.button("Take Photo", use_container_width=True,
-                                      key="webcam_take_photo",
-                                      disabled=not st.session_state.webcam_running)
+            # Take Photo is handled by st.camera_input itself; this clears the snapshot
+            discard_clicked = st.button("Retake Photo", use_container_width=True,
+                                        key="webcam_retake",
+                                        disabled=st.session_state.webcam_snapshot is not None and st.session_state.webcam_running is False)
 
-        # ── button handlers ───────────────────────────────────────────────────
         if start_clicked:
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                cap = cv2.VideoCapture(0, getattr(cv2, "CAP_DSHOW", 0))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            if cap.isOpened():
-                st.session_state.webcam_cap         = cap
-                st.session_state.webcam_running     = True
-                st.session_state.webcam_snapshot    = None
-                st.session_state.webcam_snapshot_annot = None
-                st.session_state.captured_frame     = None
-                st.session_state.cam_history        = []
-                st.session_state.cam_last_infer     = 0.0
-            else:
-                st.error("Could not open camera. Make sure no other app is using it.")
+            st.session_state.webcam_running        = True
+            st.session_state.webcam_snapshot       = None
+            st.session_state.webcam_snapshot_annot = None
+            st.session_state.captured_frame        = None
+            st.session_state.webcam_result         = None
+            st.session_state.cam_history           = []
+            st.rerun()
 
         if stop_clicked:
-            cap = st.session_state.get("webcam_cap")
-            if cap is not None:
-                try:
-                    cap.release()
-                except Exception:
-                    pass
-            st.session_state.webcam_cap     = None
             st.session_state.webcam_running = False
+            st.rerun()
 
-        # ── live frame display ────────────────────────────────────────────────
-        frame_slot  = st.empty()
-        status_slot = st.empty()
+        if discard_clicked:
+            st.session_state.webcam_snapshot       = None
+            st.session_state.webcam_snapshot_annot = None
+            st.session_state.captured_frame        = None
+            st.session_state.webcam_result         = None
+            st.session_state.webcam_running        = True
+            st.rerun()
 
-        _face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-        )
-
+        # ── live camera input (browser-side, works on cloud) ─────────────────
         if st.session_state.webcam_running:
-            cap = st.session_state.get("webcam_cap")
-            if cap is None or not cap.isOpened():
-                st.session_state.webcam_running = False
-                status_slot.error("Camera disconnected. Click Start Camera again.")
-            else:
-                ok, frame_bgr = cap.read()
-                if not ok:
-                    status_slot.error("Cannot read frame — is another app using the camera?")
-                else:
-                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    gray      = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            st.markdown(
+                '<div class="camera-note">'
+                'Camera is active. Point your face at the camera and click '
+                '<b>Take photo</b> — emotion is detected instantly on the captured frame.'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+            cam_shot = st.camera_input("", key="webcam_cam_input",
+                                       label_visibility="collapsed")
 
-                    # detect faces
-                    rects = _face_cascade.detectMultiScale(
-                        gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
-                    faces = sorted([tuple(map(int, f)) for f in rects],
-                                   key=lambda f: f[2] * f[3], reverse=True) \
-                            if len(rects) > 0 else []
+            if cam_shot is not None:
+                raw_pil = Image.open(cam_shot).convert("RGB")
+                with st.spinner("Detecting face & analysing emotion..."):
+                    lbl, conf, prbs, _ = predict_emotion(raw_pil, False)
+                    ann_np, faces      = annotate_faces(raw_pil, lbl, conf)
+                    lbl, conf, prbs    = blend_history(prbs)
 
-                    # ViT inference — throttled to every 0.5 s
-                    now = time.time()
-                    if faces and (now - st.session_state.cam_last_infer) > 0.5:
-                        x, y, w, h = faces[0]
-                        face_pil = Image.fromarray(frame_rgb[y:y+h, x:x+w])
-                        try:
-                            lbl, conf, prbs, _ = predict_emotion(face_pil, False)
-                            lbl, conf, prbs    = blend_history(prbs)
-                            st.session_state.cam_label      = lbl
-                            st.session_state.cam_conf       = conf
-                            st.session_state.cam_probs      = prbs
-                            st.session_state.cam_faces      = len(faces)
-                            st.session_state.cam_last_infer = now
-                        except Exception:
-                            pass
+                st.session_state.cam_label              = lbl
+                st.session_state.cam_conf               = conf
+                st.session_state.cam_probs              = prbs
+                st.session_state.cam_faces              = len(faces)
+                st.session_state.webcam_snapshot        = raw_pil
+                st.session_state.webcam_snapshot_annot  = Image.fromarray(ann_np)
+                st.session_state.webcam_snapshot_label  = lbl
+                st.session_state.webcam_snapshot_conf   = conf
+                st.session_state.captured_frame         = raw_pil
+                st.session_state.webcam_running         = False
+                st.rerun()
 
-                    # draw rectangle + label
-                    overlay   = frame_bgr.copy()
-                    lbl       = st.session_state.cam_label
-                    conf      = st.session_state.cam_conf
-                    clr_rgb   = RGB_C.get(lbl.lower(), (45, 212, 191))
-                    clr_bgr   = (clr_rgb[2], clr_rgb[1], clr_rgb[0])
-
-                    for i, (fx, fy, fw, fh) in enumerate(faces):
-                        c = clr_bgr if i == 0 else (148, 163, 184)
-                        cv2.rectangle(overlay, (fx, fy), (fx+fw, fy+fh), c, 2)
-                        if i == 0:
-                            label_txt = f"{lbl.upper()}  {conf*100:.0f}%"
-                            (tw, th), _ = cv2.getTextSize(
-                                label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 2)
-                            ly = max(34, fy - 10)
-                            cv2.rectangle(overlay,
-                                (fx, ly-th-12), (fx+tw+14, ly+4), c, -1)
-                            cv2.putText(overlay, label_txt, (fx+7, ly-3),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.62,
-                                (255, 255, 255), 2, cv2.LINE_AA)
-
-                    if not faces:
-                        cv2.putText(overlay, "No face detected", (20, 40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (148, 163, 184), 2, cv2.LINE_AA)
-
-                    # save clean RGB for snapshot
-                    st.session_state.webcam_latest_rgb = frame_rgb.copy()
-
-                    # render frame
-                    frame_slot.image(
-                        cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
-                        use_container_width=True)
-
-                    # status bar
-                    em_c = EMOTION_C.get(lbl.lower(), "#2dd4bf")
-                    status_slot.markdown(
-                        f'<span style="color:{em_c};font-weight:700">{lbl.title()}</span>'
-                        f'<span style="color:#8ea0b8"> · {conf*100:.0f}% confidence'
-                        f' · {len(faces)} face(s)</span>',
-                        unsafe_allow_html=True)
-
-                    # handle Take Photo
-                    if photo_clicked and st.session_state.webcam_latest_rgb is not None:
-                        clean_rgb  = st.session_state.webcam_latest_rgb
-                        pil_clean  = Image.fromarray(clean_rgb)
-                        ann_np, _  = annotate_faces(pil_clean,
-                                                    st.session_state.cam_label,
-                                                    st.session_state.cam_conf)
-                        pil_annot  = Image.fromarray(ann_np) if isinstance(ann_np, type(clean_rgb)) else Image.fromarray(ann_np)
-
-                        st.session_state.webcam_snapshot        = pil_clean
-                        st.session_state.webcam_snapshot_annot  = Image.fromarray(ann_np)
-                        st.session_state.webcam_snapshot_label  = st.session_state.cam_label
-                        st.session_state.webcam_snapshot_conf   = st.session_state.cam_conf
-                        st.session_state.captured_frame         = pil_clean
-
-                        # stop camera after snapshot
-                        try:
-                            cap.release()
-                        except Exception:
-                            pass
-                        st.session_state.webcam_cap     = None
-                        st.session_state.webcam_running = False
-                        st.rerun()
-
-                    # loop — rerun to grab next frame
-                    time.sleep(0.04)
-                    st.rerun()
-
+        elif st.session_state.webcam_snapshot is not None:
+            # show captured snapshot with annotation
+            snap_lbl = st.session_state.webcam_snapshot_label or "—"
+            snap_cf  = st.session_state.webcam_snapshot_conf  or 0.0
+            em_c     = EMOTION_C.get(snap_lbl.lower(), "#2dd4bf")
+            annot    = st.session_state.webcam_snapshot_annot or st.session_state.webcam_snapshot
+            st.image(annot, use_container_width=True)
+            st.markdown(
+                f'<div style="text-align:center;margin-top:.4rem">'                f'<span style="font:600 .68rem JetBrains Mono;color:#8ea0b8;text-transform:uppercase">Captured: </span>'                f'<span style="font-weight:800;color:{em_c}">{snap_lbl.upper()}</span>'                f'<span style="font:500 .72rem JetBrains Mono;color:#8ea0b8">  {snap_cf*100:.1f}%</span>'                f'</div>',
+                unsafe_allow_html=True,
+            )
+            prbs = st.session_state.get("cam_probs", {})
+            if prbs:
+                chart_probs(prbs, EMOTION_C, "Snapshot emotion probabilities",
+                            height=190, key="webcam_snap_probs")
         else:
-            # camera is off
-            if st.session_state.webcam_snapshot is not None:
-                snap_lbl = st.session_state.webcam_snapshot_label or "—"
-                snap_cf  = st.session_state.webcam_snapshot_conf  or 0.0
-                em_c     = EMOTION_C.get(snap_lbl.lower(), "#2dd4bf")
-                annot    = st.session_state.webcam_snapshot_annot or st.session_state.webcam_snapshot
-                frame_slot.image(annot, use_container_width=True)
-                status_slot.markdown(
-                    f'<span style="color:#8ea0b8;font-size:.8rem">Snapshot captured · </span>'
-                    f'<span style="color:{em_c};font-weight:700">{snap_lbl.title()}</span>'
-                    f'<span style="color:#8ea0b8"> {snap_cf*100:.0f}%</span>',
-                    unsafe_allow_html=True)
-                prbs = st.session_state.get("cam_probs", {})
-                if prbs:
-                    chart_probs(prbs, EMOTION_C, "Snapshot emotion probabilities",
-                                height=190, key="webcam_snap_probs")
-                if st.button("Discard & retake", use_container_width=True, key="webcam_discard_snap"):
-                    st.session_state.webcam_snapshot       = None
-                    st.session_state.webcam_snapshot_annot = None
-                    st.session_state.captured_frame        = None
-                    st.session_state.webcam_result         = None
-                    st.rerun()
-            else:
-                frame_slot.markdown(
-                    '<div style="min-height:300px;display:flex;align-items:center;'
-                    'justify-content:center;border:1px dashed rgba(226,232,240,.18);'
-                    'border-radius:8px;color:#4b5573;font-size:.9rem;text-align:center">'
-                    'Click <b style="color:#f8fafc;margin:0 .3rem">Start Camera</b>'
-                    ' to begin live detection</div>',
-                    unsafe_allow_html=True)
+            st.markdown(
+                '<div style="min-height:260px;display:flex;align-items:center;'                'justify-content:center;border:1px dashed rgba(226,232,240,.18);'                'border-radius:8px;color:#4b5573;font-size:.9rem;text-align:center">'                'Click <b style="color:#f8fafc;margin:0 .3rem">Start Camera</b>'                ' to activate the browser camera</div>',
+                unsafe_allow_html=True,
+            )
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -668,7 +569,6 @@ with webcam_tab:
         show_results(*st.session_state.webcam_result, heatmap, tokens, "webcam")
     else:
         st.info("Start the camera, take a photo, then provide text or audio and click Analyse.")
-
 # ── HISTORY TAB ───────────────────────────────────────────────────────────────
 with history_tab:
     history = st.session_state.analysis_history
