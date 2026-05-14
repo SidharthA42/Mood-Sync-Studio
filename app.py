@@ -1,3 +1,4 @@
+
 import time
 from datetime import datetime
 import numpy as np
@@ -81,14 +82,15 @@ def init_state():
         "smile_cascade": None,
         "analysis_history": [],
         "latest_source": None,
+        # new keys for the revamped webcam tab
         "webcam_running": False,
         "webcam_cam_version": 0,
-        "webcam_snapshot": None,
-        "webcam_snapshot_annot": None,
+        "webcam_snapshot": None,        # PIL Image of the snapshot (clean)
+        "webcam_snapshot_annot": None,  # PIL Image with face box drawn on
         "webcam_snapshot_label": None,
         "webcam_snapshot_conf": None,
-        "webrtc_ctx": None,
-        "last_processed_frame": None,
+        "webrtc_ctx": None,             # store webrtc context
+        "last_processed_frame": None,   # store latest frame for snapshot
         "live_emotion": "Scanning",
         "live_confidence": 0.0,
     }
@@ -372,6 +374,7 @@ EM_BGR = {
 FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
 def draw_overlay(frame_bgr, label, conf):
+    """Draw face rectangles and emotion label on BGR frame."""
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     faces = FACE_CASCADE.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
     colour = EM_BGR.get(label.lower(), (45, 212, 191))
@@ -400,9 +403,11 @@ class MoodSyncVideoProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
+        # Keep a copy for snapshot (clean, no overlay)
         clean_copy = img.copy()
         self.latest_clean_frame = clean_copy
 
+        # Run inference every 6 frames
         if self.frame_count % 6 == 0:
             try:
                 rgb = cv2.cvtColor(clean_copy, cv2.COLOR_BGR2RGB)
@@ -410,12 +415,14 @@ class MoodSyncVideoProcessor(VideoProcessorBase):
                 self.current_label = lbl
                 self.current_conf = conf
                 self.current_probs = probs
+                # Update session state for live badge display
                 st.session_state.live_emotion = lbl
                 st.session_state.live_confidence = conf
             except Exception as e:
                 pass
         self.frame_count += 1
 
+        # Draw overlay on the frame to be shown
         annotated = draw_overlay(img, self.current_label, self.current_conf)
         return frame.from_ndarray(annotated, format="bgr24")
 
@@ -510,7 +517,7 @@ with upload_tab:
         st.info("Upload an image and provide either text or a transcribed audio recording/upload.")
 
 
-# ── Webcam tab (Fixed with TURN server & TCP) ─────────────────────────────────
+# ── Webcam tab (Fixed with streamlit-webrtc) ─────────────────────────────────
 with webcam_tab:
     left, right = st.columns(2, gap="large")
 
@@ -547,6 +554,7 @@ with webcam_tab:
 
         st.markdown('<div class="input-button-space"></div>', unsafe_allow_html=True)
 
+        # Show live video feed using webrtc if running
         if st.session_state.webcam_running:
             st.markdown("""
             <div class="cam-hint">
@@ -556,34 +564,9 @@ with webcam_tab:
             </div>
             """, unsafe_allow_html=True)
 
-            # --- TURN/STUN configuration for cloud environments ---
-            rtc_configuration = {
-                "iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                    {"urls": ["stun:stun1.l.google.com:19302"]},
-                    {
-                        "urls": "turn:openrelay.metered.ca:80",
-                        "username": "openrelayproject",
-                        "credential": "openrelayproject"
-                    },
-                    {
-                        "urls": "turn:openrelay.metered.ca:443",
-                        "username": "openrelayproject",
-                        "credential": "openrelayproject"
-                    },
-                    {
-                        "urls": "turn:openrelay.metered.ca:443?transport=tcp",
-                        "username": "openrelayproject",
-                        "credential": "openrelayproject"
-                    }
-                ],
-                "iceTransportPolicy": "relay"   # forces TURN, avoids UDP restrictions
-            }
-
             ctx = webrtc_streamer(
                 key="moodsync-webrtc",
                 mode=WebRtcMode.SENDRECV,
-                rtc_configuration=rtc_configuration,
                 video_processor_factory=MoodSyncVideoProcessor,
                 media_stream_constraints={"video": True, "audio": False},
                 async_processing=True,
@@ -601,7 +584,7 @@ with webcam_tab:
                 unsafe_allow_html=True,
             )
 
-            # Handle Take Photo
+            # Handle Take Photo: capture latest frame from the video processor
             if photo_clicked and ctx and ctx.video_processor:
                 proc = ctx.video_processor
                 if hasattr(proc, 'latest_clean_frame') and proc.latest_clean_frame is not None:
@@ -609,6 +592,7 @@ with webcam_tab:
                     clean_rgb = cv2.cvtColor(clean_bgr, cv2.COLOR_BGR2RGB)
                     pil_clean = Image.fromarray(clean_rgb)
 
+                    # Annotated version (with box and label)
                     ann_bgr = draw_overlay(clean_bgr.copy(), proc.current_label, proc.current_conf)
                     ann_rgb = cv2.cvtColor(ann_bgr, cv2.COLOR_BGR2RGB)
                     pil_annot = Image.fromarray(ann_rgb)
@@ -633,7 +617,7 @@ with webcam_tab:
             </div>
             """, unsafe_allow_html=True)
 
-        # Snapshot preview
+        # Show snapshot preview if available
         if st.session_state.webcam_snapshot is not None:
             st.markdown('<div class="snapshot-box"><div class="snapshot-label">📸 Snapshot — ready to analyse</div>', unsafe_allow_html=True)
             annot = st.session_state.get("webcam_snapshot_annot") or st.session_state.webcam_snapshot
@@ -776,3 +760,4 @@ with future_tab:
     )
 
 st.markdown('<div class="muted" style="border-top:1px solid rgba(226,232,240,.14);padding-top:1rem;text-align:center;font:600 .72rem JetBrains Mono;margin-top:1rem">MoodSync Studio | ViT emotion | RoBERTa sentiment | Whisper audio | WebRTC live overlay</div>', unsafe_allow_html=True)
+
