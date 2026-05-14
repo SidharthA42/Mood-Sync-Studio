@@ -502,8 +502,8 @@ with webcam_tab:
             if camera_photo is not None:
                 # Convert to PIL Image
                 img = Image.open(camera_photo).convert("RGB")
-                # Run emotion prediction
-                label, conf, probs, _ = predict_emotion(img, heatmap=False)
+                # Run emotion prediction - FIX: use positional argument False for heatmap
+                label, conf, probs, _ = predict_emotion(img, False)
                 # Draw face box and label
                 annotated, faces = annotate_faces(img, label, conf)
                 # Store in session state (overwrite previous)
@@ -521,7 +521,6 @@ with webcam_tab:
                 st.info("Press the shutter button above to take a photo.")
 
             # Take Photo button: if a photo has already been taken, it just saves it (already done)
-            # We'll also add a manual save button in case the user wants to re-save the same photo.
             if photo_clicked and st.session_state.captured_frame is not None:
                 st.success("Photo saved! You can now add text/audio and click Analyse.")
         else:
